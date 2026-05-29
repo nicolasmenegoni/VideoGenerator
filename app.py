@@ -43,7 +43,14 @@ class VideoGeneratorApp:
 
         self.gemini_key = StringVar()
         self.pexels_key = StringVar()
+        self.video_title = StringVar(value="video_gerado")
         self.output_dir = StringVar(value=str(Path.home() / "Videos"))
+        self.subtitle_position = StringVar(value="Baixo")
+        self.subtitle_color = StringVar(value="#FFFFFF")
+        self.subtitle_size = StringVar(value="64")
+        self.subtitle_background = StringVar(value="Sim")
+        self.subtitle_background_color = StringVar(value="#000000")
+        self.subtitle_font = StringVar(value="Arial")
         self.status_text = StringVar(value="Pronto.")
         self.progress_text = StringVar(value="")
         self.lines: list[ScriptLine] = []
@@ -82,6 +89,7 @@ class VideoGeneratorApp:
         self._add_nav_button(nav, "apis", "APIs")
         self._add_nav_button(nav, "roteiro", "Roteiro")
         self._add_nav_button(nav, "video", "Video")
+        self._add_nav_button(nav, "legendas", "Legendas")
 
         self.content = Frame(shell, bg="#ffffff")
         self.content.pack(fill=BOTH, expand=True)
@@ -89,10 +97,12 @@ class VideoGeneratorApp:
         self.tabs["apis"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
         self.tabs["roteiro"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
         self.tabs["video"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
+        self.tabs["legendas"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
 
         self._build_api_tab(self.tabs["apis"])
         self._build_script_tab(self.tabs["roteiro"])
         self._build_video_tab(self.tabs["video"])
+        self._build_subtitles_tab(self.tabs["legendas"])
         self._refresh_lines()
         self._show_tab("roteiro")
 
@@ -147,16 +157,18 @@ class VideoGeneratorApp:
         top = Frame(parent, bg="#ffffff")
         top.pack(fill=X)
         ttk.Label(top, text="Roteiro", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Digite uma frase por linha. Depois vá para a aba Video para escolher as mídias do Pexels.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
+        ttk.Label(top, text="Digite o título e depois uma frase por linha. O título será usado como nome do arquivo .mp4.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
 
-        self.script_text = Text(parent, height=14, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
+        Label(parent, text="Titulo", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        Entry(parent, textvariable=self.video_title, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 12)).pack(fill=X, ipady=10, pady=(6, 14))
+
+        self.script_text = Text(parent, height=12, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
         self.script_text.pack(fill=BOTH, expand=True)
         self.script_text.insert("1.0", "Hoje vamos falar sobre a China.\nEsse país é incrível.\nVamos te provar.")
 
         actions = Frame(parent, bg="#ffffff", pady=12)
         actions.pack(fill=X)
         Button(actions, text="Atualizar roteiro", command=self._refresh_lines, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
-        Button(actions, text="Ir para Video", command=lambda: self._show_tab("video"), bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
 
     def _build_video_tab(self, parent: Frame) -> None:
         top = Frame(parent, bg="#ffffff")
@@ -182,6 +194,76 @@ class VideoGeneratorApp:
         self.lines_frame.bind("<Configure>", lambda _event: self.lines_canvas.configure(scrollregion=self.lines_canvas.bbox("all")))
         self.lines_canvas.bind("<Configure>", lambda event: self.lines_canvas.itemconfigure(self.lines_window, width=event.width))
 
+    def _build_subtitles_tab(self, parent: Frame) -> None:
+        top = Frame(parent, bg="#ffffff")
+        top.pack(fill=X)
+        ttk.Label(top, text="Legendas", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(top, text="Configure como a frase de cada cena aparecerá por cima do vídeo.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
+
+        layout = Frame(parent, bg="#ffffff")
+        layout.pack(fill=BOTH, expand=True)
+
+        controls = Frame(layout, bg="#ffffff")
+        controls.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 18))
+        preview_box = Frame(layout, bg="#ffffff")
+        preview_box.pack(side=RIGHT, fill=Y)
+
+        self._option_row(controls, "Posição no video", self.subtitle_position, ["Baixo", "Centro", "Topo"])
+        self._entry_row(controls, "Cor da legenda", self.subtitle_color, "Ex.: #FFFFFF")
+        self._entry_row(controls, "Tamanho", self.subtitle_size, "Ex.: 64")
+        self._option_row(controls, "Fundo", self.subtitle_background, ["Sim", "Não"])
+        self._entry_row(controls, "Cor do fundo", self.subtitle_background_color, "Ex.: #000000")
+        self._entry_row(controls, "Fonte", self.subtitle_font, "Ex.: Arial")
+
+        ttk.Label(preview_box, text="Preview", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(preview_box, text="Simulação vertical da legenda no vídeo.", style="Muted.TLabel").pack(anchor="w", pady=(4, 10))
+        self.subtitle_preview = Canvas(preview_box, width=270, height=480, bg="#222a3a", bd=0, highlightthickness=0)
+        self.subtitle_preview.pack()
+
+        for variable in [
+            self.subtitle_position,
+            self.subtitle_color,
+            self.subtitle_size,
+            self.subtitle_background,
+            self.subtitle_background_color,
+            self.subtitle_font,
+        ]:
+            variable.trace_add("write", lambda *_args: self._update_subtitle_preview())
+        self._update_subtitle_preview()
+
+    def _entry_row(self, parent: Frame, label: str, variable: StringVar, hint: str) -> None:
+        Label(parent, text=label, bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        Entry(parent, textvariable=variable, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11)).pack(fill=X, ipady=9, pady=(6, 4))
+        Label(parent, text=hint, bg="#ffffff", fg="#657084", font=("Segoe UI", 8)).pack(anchor="w", pady=(0, 12))
+
+    def _option_row(self, parent: Frame, label: str, variable: StringVar, values: list[str]) -> None:
+        Label(parent, text=label, bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        combo = ttk.Combobox(parent, textvariable=variable, values=values, state="readonly", font=("Segoe UI", 10))
+        combo.pack(fill=X, ipady=6, pady=(6, 14))
+
+    def _update_subtitle_preview(self) -> None:
+        if not hasattr(self, "subtitle_preview"):
+            return
+        canvas = self.subtitle_preview
+        canvas.delete("all")
+        canvas.create_rectangle(0, 0, 270, 480, fill="#222a3a", outline="")
+        canvas.create_rectangle(18, 24, 252, 456, outline="#39445f", width=2)
+        canvas.create_oval(98, 120, 172, 194, fill="#3d4f7d", outline="")
+        canvas.create_rectangle(54, 250, 216, 360, fill="#33415f", outline="")
+
+        text = "Hoje vamos falar sobre a China."
+        size = self._safe_int(self.subtitle_size.get(), 30, 12, 96)
+        preview_size = max(10, int(size * 0.38))
+        position = self.subtitle_position.get()
+        y = {"Topo": 96, "Centro": 240, "Baixo": 390}.get(position, 390)
+        color = self._normalize_color(self.subtitle_color.get(), "#FFFFFF")
+        bg_color = self._normalize_color(self.subtitle_background_color.get(), "#000000")
+        font = self.subtitle_font.get().strip() or "Arial"
+
+        if self.subtitle_background.get() == "Sim":
+            canvas.create_rectangle(22, y - 34, 248, y + 34, fill=bg_color, outline="")
+        canvas.create_text(135, y, text=text, fill=color, font=(font, preview_size, "bold"), width=210, justify="center")
+
     def _labeled_entry(self, parent: Frame, text: str, variable: StringVar, show: str | None = None) -> None:
         Label(parent, text=text, bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         Entry(parent, textvariable=variable, show=show, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11)).pack(fill=X, ipady=10, pady=(6, 14))
@@ -192,12 +274,30 @@ class VideoGeneratorApp:
                 data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
                 self.gemini_key.set(data.get("gemini_key", ""))
                 self.pexels_key.set(data.get("pexels_key", ""))
+                self.video_title.set(data.get("video_title", self.video_title.get()))
                 self.output_dir.set(data.get("output_dir", self.output_dir.get()))
+                self.subtitle_position.set(data.get("subtitle_position", self.subtitle_position.get()))
+                self.subtitle_color.set(data.get("subtitle_color", self.subtitle_color.get()))
+                self.subtitle_size.set(data.get("subtitle_size", self.subtitle_size.get()))
+                self.subtitle_background.set(data.get("subtitle_background", self.subtitle_background.get()))
+                self.subtitle_background_color.set(data.get("subtitle_background_color", self.subtitle_background_color.get()))
+                self.subtitle_font.set(data.get("subtitle_font", self.subtitle_font.get()))
             except json.JSONDecodeError:
                 pass
 
     def _save_config(self) -> None:
-        data = {"gemini_key": self.gemini_key.get().strip(), "pexels_key": self.pexels_key.get().strip(), "output_dir": self.output_dir.get().strip()}
+        data = {
+            "gemini_key": self.gemini_key.get().strip(),
+            "pexels_key": self.pexels_key.get().strip(),
+            "video_title": self.video_title.get().strip(),
+            "output_dir": self.output_dir.get().strip(),
+            "subtitle_position": self.subtitle_position.get().strip(),
+            "subtitle_color": self.subtitle_color.get().strip(),
+            "subtitle_size": self.subtitle_size.get().strip(),
+            "subtitle_background": self.subtitle_background.get().strip(),
+            "subtitle_background_color": self.subtitle_background_color.get().strip(),
+            "subtitle_font": self.subtitle_font.get().strip(),
+        }
         CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
         self.status_text.set("Chaves salvas com segurança no perfil do usuário.")
 
@@ -307,11 +407,11 @@ class VideoGeneratorApp:
 
                     self._queue_status(f"Criando cena {index}/{len(self.lines)}...", step=True)
                     clip_path = workdir / f"clip_{index:03d}.mp4"
-                    self._create_clip(ffmpeg, media_path, audio_path, clip_path)
+                    self._create_clip(ffmpeg, media_path, audio_path, clip_path, line.text)
                     clips.append(clip_path)
 
                 self._queue_status("Unindo cenas...", step=True)
-                final_path = Path(self.output_dir.get()).expanduser() / "video_gerado.mp4"
+                final_path = Path(self.output_dir.get()).expanduser() / f"{self._safe_filename(self.video_title.get())}.mp4"
                 self._concat_clips(ffmpeg, clips, final_path, workdir)
                 self.message_queue.put(("done", f"Vídeo gerado em:\n{final_path}"))
         except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
@@ -409,8 +509,9 @@ class VideoGeneratorApp:
             return photos[0]["src"]["large2x"]
         raise RuntimeError(f"Nenhuma mídia encontrada no Pexels para: {query}")
 
-    def _create_clip(self, ffmpeg: str, media_path: Path, audio_path: Path, clip_path: Path) -> None:
+    def _create_clip(self, ffmpeg: str, media_path: Path, audio_path: Path, clip_path: Path, subtitle_text: str) -> None:
         duration = self._audio_duration(audio_path)
+        video_filter = self._video_filter(subtitle_text)
         image_exts = {".jpg", ".jpeg", ".png", ".webp"}
         if media_path.suffix.lower() in image_exts:
             cmd = [
@@ -425,7 +526,7 @@ class VideoGeneratorApp:
                 "-i",
                 str(audio_path),
                 "-vf",
-                f"scale={VIDEO_SIZE}:force_original_aspect_ratio=increase,crop={VIDEO_SIZE},format=yuv420p",
+                video_filter,
                 "-r",
                 FPS,
                 "-c:v",
@@ -448,7 +549,7 @@ class VideoGeneratorApp:
                 "-t",
                 f"{duration:.3f}",
                 "-vf",
-                f"scale={VIDEO_SIZE}:force_original_aspect_ratio=increase,crop={VIDEO_SIZE},format=yuv420p",
+                video_filter,
                 "-r",
                 FPS,
                 "-c:v",
@@ -463,6 +564,72 @@ class VideoGeneratorApp:
                 str(clip_path),
             ]
         self._run_ffmpeg(cmd)
+
+    def _video_filter(self, subtitle_text: str) -> str:
+        base_filter = f"scale={VIDEO_SIZE}:force_original_aspect_ratio=increase,crop={VIDEO_SIZE},format=yuv420p"
+        text = self._escape_drawtext(subtitle_text)
+        font = self._escape_drawtext(self.subtitle_font.get().strip() or "Arial")
+        font_size = self._safe_int(self.subtitle_size.get(), 64, 12, 160)
+        font_color = self._ffmpeg_color(self.subtitle_color.get(), "0xFFFFFF")
+        y_expr = self._subtitle_y_expression()
+        box_enabled = "1" if self.subtitle_background.get() == "Sim" else "0"
+        box_color = self._ffmpeg_color(self.subtitle_background_color.get(), "0x000000")
+        drawtext = (
+            "drawtext="
+            f"font='{font}':"
+            f"text='{text}':"
+            f"fontcolor={font_color}:"
+            f"fontsize={font_size}:"
+            f"box={box_enabled}:"
+            f"boxcolor={box_color}@0.70:"
+            "boxborderw=24:"
+            "line_spacing=12:"
+            "x=(w-text_w)/2:"
+            f"y={y_expr}"
+        )
+        return f"{base_filter},{drawtext}"
+
+    def _subtitle_y_expression(self) -> str:
+        position = self.subtitle_position.get()
+        if position == "Topo":
+            return "h*0.12"
+        if position == "Centro":
+            return "(h-text_h)/2"
+        return "h-text_h-h*0.14"
+
+    @staticmethod
+    def _escape_drawtext(value: str) -> str:
+        return value.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
+
+    @staticmethod
+    def _ffmpeg_color(value: str, fallback: str) -> str:
+        color = value.strip()
+        if re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            return "0x" + color[1:]
+        if re.fullmatch(r"0x[0-9a-fA-F]{6}", color):
+            return color
+        return fallback
+
+    @staticmethod
+    def _normalize_color(value: str, fallback: str) -> str:
+        color = value.strip()
+        if re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            return color
+        return fallback
+
+    @staticmethod
+    def _safe_int(value: str, default: int, minimum: int, maximum: int) -> int:
+        try:
+            number = int(value)
+        except ValueError:
+            return default
+        return min(max(number, minimum), maximum)
+
+    @staticmethod
+    def _safe_filename(value: str) -> str:
+        name = re.sub(r"[\\/:*?\"<>|]+", "", value.strip())
+        name = re.sub(r"\s+", "_", name).strip("._")
+        return name or "video_gerado"
 
     def _concat_clips(self, ffmpeg: str, clips: list[Path], final_path: Path, workdir: Path) -> None:
         list_file = workdir / "clips.txt"
