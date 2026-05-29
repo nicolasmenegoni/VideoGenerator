@@ -102,8 +102,8 @@ class VideoGeneratorApp:
         self.progress.pack(fill=X, pady=(0, 10))
         Button(bottom, text="Gerar vídeo", command=self._start_generation, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=18, pady=13, font=("Segoe UI", 13, "bold")).pack(fill=X)
 
-        footer = Frame(shell, bg="#f6f7fb", pady=(8, 0))
-        footer.pack(fill=X)
+        footer = Frame(shell, bg="#f6f7fb")
+        footer.pack(fill=X, pady=(8, 0))
         Label(footer, textvariable=self.status_text, bg="#f6f7fb", fg="#374151", font=("Segoe UI", 10)).pack(side=LEFT)
         Label(footer, textvariable=self.progress_text, bg="#f6f7fb", fg="#657084", font=("Segoe UI", 10)).pack(side=RIGHT)
 
@@ -164,8 +164,8 @@ class VideoGeneratorApp:
         ttk.Label(top, text="Video", style="Title.TLabel").pack(anchor="w")
         ttk.Label(top, text="Escolha o link do Pexels para cada frase ou deixe vazio para buscar automaticamente pela frase.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
 
-        actions = Frame(parent, bg="#ffffff", pady=(0, 12))
-        actions.pack(fill=X)
+        actions = Frame(parent, bg="#ffffff")
+        actions.pack(fill=X, pady=(0, 12))
         Button(actions, text="Sincronizar frases do roteiro", command=self._refresh_lines, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
         Button(actions, text="Escolher pasta de saída", command=self._choose_output_dir, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
         Label(actions, textvariable=self.output_dir, bg="#ffffff", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT, padx=(12, 0))
