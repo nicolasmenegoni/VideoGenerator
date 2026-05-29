@@ -31,9 +31,9 @@ O executável será criado em `dist/VideoGenerator.exe`.
 1. Abra o app.
 2. Na aba **APIs**, informe a chave do Google Gemini e a chave do Pexels.
 3. Na aba **Roteiro**, escreva uma frase por linha.
-4. Clique em **Atualizar lista de frases**.
-5. Opcionalmente, clique em **Link Pexels** ao lado de uma frase para colar uma URL manual.
-6. Escolha a pasta de saída.
-7. Clique em **Gerar vídeo**.
+4. Clique em **Atualizar roteiro** ou vá direto para a aba **Video**.
+5. Na aba **Video**, clique em **Link Pexels** ao lado de cada frase para colar uma URL manual, ou deixe vazio para busca automática.
+6. Na aba **Video**, escolha a pasta de saída.
+7. Use o botão fixo **Gerar vídeo**, que fica sempre visível na parte inferior do app.
 
 Se uma frase não tiver link manual, o app pesquisa no Pexels pela própria frase e usa o primeiro vídeo/foto encontrado.

@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import tempfile
 import threading
-import re
 import urllib.parse
 import wave
 from dataclasses import dataclass
@@ -37,8 +37,8 @@ class VideoGeneratorApp:
     def __init__(self) -> None:
         self.root = Tk()
         self.root.title(APP_TITLE)
-        self.root.geometry("980x720")
-        self.root.minsize(860, 620)
+        self.root.geometry("1040x760")
+        self.root.minsize(900, 660)
         self.root.configure(bg="#f6f7fb")
 
         self.gemini_key = StringVar()
@@ -48,6 +48,9 @@ class VideoGeneratorApp:
         self.progress_text = StringVar(value="")
         self.lines: list[ScriptLine] = []
         self.message_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.tabs: dict[str, Frame] = {}
+        self.nav_buttons: dict[str, Button] = {}
+        self.active_tab = ""
 
         self._configure_style()
         self._load_config()
@@ -60,14 +63,9 @@ class VideoGeneratorApp:
     def _configure_style(self) -> None:
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("TNotebook", background="#f6f7fb", borderwidth=0)
-        style.configure("TNotebook.Tab", padding=(18, 10), font=("Segoe UI", 10, "bold"))
-        style.configure("Card.TFrame", background="#ffffff", relief="flat")
         style.configure("Muted.TLabel", background="#ffffff", foreground="#657084", font=("Segoe UI", 9))
         style.configure("Title.TLabel", background="#ffffff", foreground="#111827", font=("Segoe UI", 17, "bold"))
         style.configure("TLabel", background="#ffffff", foreground="#111827", font=("Segoe UI", 10))
-        style.configure("Primary.TButton", font=("Segoe UI", 11, "bold"), padding=(18, 12))
-        style.configure("TButton", font=("Segoe UI", 10), padding=(12, 8))
         style.configure("Horizontal.TProgressbar", troughcolor="#edf0f7", background="#5b6cff")
 
     def _build_ui(self) -> None:
@@ -75,25 +73,66 @@ class VideoGeneratorApp:
         shell.pack(fill=BOTH, expand=True)
 
         header = Frame(shell, bg="#f6f7fb")
-        header.pack(fill=X, pady=(0, 16))
+        header.pack(fill=X, pady=(0, 12))
         Label(header, text="VideoGenerator", bg="#f6f7fb", fg="#111827", font=("Segoe UI", 24, "bold")).pack(anchor="w")
         Label(header, text="Gere vídeos verticais com Gemini TTS + Pexels em poucos cliques.", bg="#f6f7fb", fg="#657084", font=("Segoe UI", 10)).pack(anchor="w")
 
-        notebook = ttk.Notebook(shell)
-        notebook.pack(fill=BOTH, expand=True)
+        nav = Frame(shell, bg="#eef1f8", padx=6, pady=6)
+        nav.pack(fill=X, pady=(0, 12))
+        self._add_nav_button(nav, "apis", "APIs")
+        self._add_nav_button(nav, "roteiro", "Roteiro")
+        self._add_nav_button(nav, "video", "Video")
 
-        api_tab = Frame(notebook, bg="#ffffff", padx=24, pady=24)
-        script_tab = Frame(notebook, bg="#ffffff", padx=24, pady=24)
-        notebook.add(api_tab, text="APIs")
-        notebook.add(script_tab, text="Roteiro")
+        self.content = Frame(shell, bg="#ffffff")
+        self.content.pack(fill=BOTH, expand=True)
 
-        self._build_api_tab(api_tab)
-        self._build_script_tab(script_tab)
+        self.tabs["apis"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
+        self.tabs["roteiro"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
+        self.tabs["video"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
 
-        footer = Frame(shell, bg="#f6f7fb", pady=14)
+        self._build_api_tab(self.tabs["apis"])
+        self._build_script_tab(self.tabs["roteiro"])
+        self._build_video_tab(self.tabs["video"])
+        self._refresh_lines()
+        self._show_tab("roteiro")
+
+        bottom = Frame(shell, bg="#f6f7fb", pady=12)
+        bottom.pack(fill=X)
+        self.progress = ttk.Progressbar(bottom, mode="determinate", style="Horizontal.TProgressbar")
+        self.progress.pack(fill=X, pady=(0, 10))
+        Button(bottom, text="Gerar vídeo", command=self._start_generation, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=18, pady=13, font=("Segoe UI", 13, "bold")).pack(fill=X)
+
+        footer = Frame(shell, bg="#f6f7fb", pady=(8, 0))
         footer.pack(fill=X)
         Label(footer, textvariable=self.status_text, bg="#f6f7fb", fg="#374151", font=("Segoe UI", 10)).pack(side=LEFT)
         Label(footer, textvariable=self.progress_text, bg="#f6f7fb", fg="#657084", font=("Segoe UI", 10)).pack(side=RIGHT)
+
+    def _add_nav_button(self, parent: Frame, tab_id: str, label: str) -> None:
+        button = Button(
+            parent,
+            text=label,
+            command=lambda: self._show_tab(tab_id),
+            bd=0,
+            relief="flat",
+            padx=18,
+            pady=9,
+            font=("Segoe UI", 10, "bold"),
+        )
+        button.pack(side=LEFT, padx=(0, 6))
+        self.nav_buttons[tab_id] = button
+
+    def _show_tab(self, tab_id: str) -> None:
+        if tab_id == "video":
+            self._refresh_lines()
+        for frame in self.tabs.values():
+            frame.pack_forget()
+        self.tabs[tab_id].pack(fill=BOTH, expand=True)
+        self.active_tab = tab_id
+        for key, button in self.nav_buttons.items():
+            if key == tab_id:
+                button.configure(bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff")
+            else:
+                button.configure(bg="#ffffff", fg="#374151", activebackground="#ffffff", activeforeground="#374151")
 
     def _build_api_tab(self, parent: Frame) -> None:
         ttk.Label(parent, text="Chaves de API", style="Title.TLabel").pack(anchor="w")
@@ -108,20 +147,31 @@ class VideoGeneratorApp:
         top = Frame(parent, bg="#ffffff")
         top.pack(fill=X)
         ttk.Label(top, text="Roteiro", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Digite uma frase por linha. Cada frase vira um áudio e uma cena.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
+        ttk.Label(top, text="Digite uma frase por linha. Depois vá para a aba Video para escolher as mídias do Pexels.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
 
-        self.script_text = Text(parent, height=7, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
-        self.script_text.pack(fill=X)
+        self.script_text = Text(parent, height=14, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
+        self.script_text.pack(fill=BOTH, expand=True)
         self.script_text.insert("1.0", "Hoje vamos falar sobre a China.\nEsse país é incrível.\nVamos te provar.")
 
         actions = Frame(parent, bg="#ffffff", pady=12)
         actions.pack(fill=X)
-        Button(actions, text="Atualizar lista de frases", command=self._refresh_lines, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
+        Button(actions, text="Atualizar roteiro", command=self._refresh_lines, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
+        Button(actions, text="Ir para Video", command=lambda: self._show_tab("video"), bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
+
+    def _build_video_tab(self, parent: Frame) -> None:
+        top = Frame(parent, bg="#ffffff")
+        top.pack(fill=X)
+        ttk.Label(top, text="Video", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(top, text="Escolha o link do Pexels para cada frase ou deixe vazio para buscar automaticamente pela frase.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
+
+        actions = Frame(parent, bg="#ffffff", pady=(0, 12))
+        actions.pack(fill=X)
+        Button(actions, text="Sincronizar frases do roteiro", command=self._refresh_lines, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
         Button(actions, text="Escolher pasta de saída", command=self._choose_output_dir, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
         Label(actions, textvariable=self.output_dir, bg="#ffffff", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT, padx=(12, 0))
 
         list_card = Frame(parent, bg="#f3f5fb", padx=10, pady=10)
-        list_card.pack(fill=BOTH, expand=True, pady=(2, 12))
+        list_card.pack(fill=BOTH, expand=True)
         self.lines_canvas = Canvas(list_card, bd=0, highlightthickness=0, bg="#f3f5fb")
         self.lines_canvas.pack(side=LEFT, fill=BOTH, expand=True)
         scrollbar = ttk.Scrollbar(list_card, orient="vertical", command=self.lines_canvas.yview)
@@ -131,12 +181,6 @@ class VideoGeneratorApp:
         self.lines_window = self.lines_canvas.create_window((0, 0), window=self.lines_frame, anchor="nw")
         self.lines_frame.bind("<Configure>", lambda _event: self.lines_canvas.configure(scrollregion=self.lines_canvas.bbox("all")))
         self.lines_canvas.bind("<Configure>", lambda event: self.lines_canvas.itemconfigure(self.lines_window, width=event.width))
-
-        self.progress = ttk.Progressbar(parent, mode="determinate", style="Horizontal.TProgressbar")
-        self.progress.pack(fill=X, pady=(0, 12))
-        Button(parent, text="Gerar vídeo", command=self._start_generation, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=18, pady=14, font=("Segoe UI", 13, "bold")).pack(fill=X)
-
-        self._refresh_lines()
 
     def _labeled_entry(self, parent: Frame, text: str, variable: StringVar, show: str | None = None) -> None:
         Label(parent, text=text, bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
@@ -162,18 +206,24 @@ class VideoGeneratorApp:
         phrases = [line.strip() for line in self.script_text.get("1.0", END).splitlines() if line.strip()]
         self.lines = [ScriptLine(text=phrase, media_url=existing.get(phrase, "")) for phrase in phrases]
         self._render_lines()
+        self.status_text.set(f"{len(self.lines)} frase(s) sincronizada(s).")
 
     def _render_lines(self) -> None:
+        if not hasattr(self, "lines_frame"):
+            return
         for child in self.lines_frame.winfo_children():
             child.destroy()
+        if not self.lines:
+            Label(self.lines_frame, text="Nenhuma frase no roteiro ainda.", bg="#f3f5fb", fg="#657084", font=("Segoe UI", 10)).pack(anchor="w", padx=8, pady=8)
+            return
         for index, line in enumerate(self.lines):
             row = Frame(self.lines_frame, bg="#ffffff", padx=12, pady=10)
             row.pack(fill=X, pady=(0, 8))
             text_area = Frame(row, bg="#ffffff")
             text_area.pack(side=LEFT, fill=BOTH, expand=True)
-            Label(text_area, text=line.text, bg="#ffffff", fg="#111827", anchor="w", justify=LEFT, wraplength=520, font=("Segoe UI", 10, "bold")).pack(fill=X, anchor="w")
+            Label(text_area, text=f"{index + 1}. {line.text}", bg="#ffffff", fg="#111827", anchor="w", justify=LEFT, wraplength=560, font=("Segoe UI", 10, "bold")).pack(fill=X, anchor="w")
             media_label = line.media_url if line.media_url else "Sem link manual: o app buscará automaticamente no Pexels."
-            Label(text_area, text=media_label, bg="#ffffff", fg="#657084", anchor="w", justify=LEFT, wraplength=520, font=("Segoe UI", 9)).pack(fill=X, anchor="w", pady=(4, 0))
+            Label(text_area, text=media_label, bg="#ffffff", fg="#657084", anchor="w", justify=LEFT, wraplength=560, font=("Segoe UI", 9)).pack(fill=X, anchor="w", pady=(4, 0))
             Button(row, text="Link Pexels", command=lambda idx=index: self._edit_line_link(idx), bg="#eef1ff", fg="#27319f", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=RIGHT, padx=(12, 0))
 
     def _edit_line_link(self, index: int) -> None:
@@ -181,11 +231,12 @@ class VideoGeneratorApp:
 
         dialog = Toplevel(self.root)
         dialog.title("Link Pexels")
-        dialog.geometry("620x190")
+        dialog.geometry("640x200")
         dialog.configure(bg="#ffffff")
         dialog.transient(self.root)
         dialog.grab_set()
-        Label(dialog, text=line.text, bg="#ffffff", fg="#111827", wraplength=560, font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20, pady=(18, 8))
+        Label(dialog, text=line.text, bg="#ffffff", fg="#111827", wraplength=580, font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20, pady=(18, 8))
+        Label(dialog, text="Cole um link de vídeo/foto do Pexels ou deixe vazio para busca automática.", bg="#ffffff", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", padx=20, pady=(0, 8))
         value = StringVar(value=line.media_url)
         Entry(dialog, textvariable=value, bd=0, bg="#f3f5fb", fg="#111827", font=("Segoe UI", 10)).pack(fill=X, padx=20, ipady=9)
 
@@ -209,10 +260,12 @@ class VideoGeneratorApp:
             return
         if not self.gemini_key.get().strip() or not self.pexels_key.get().strip():
             messagebox.showerror(APP_TITLE, "Informe as duas chaves de API na aba APIs.")
+            self._show_tab("apis")
             return
         out_dir = Path(self.output_dir.get()).expanduser()
         out_dir.mkdir(parents=True, exist_ok=True)
         self.progress.configure(value=0, maximum=max(len(self.lines) * 3 + 1, 1))
+        self.progress_text.set("Gerando...")
         thread = threading.Thread(target=self._generate_video_worker, daemon=True)
         thread.start()
 
