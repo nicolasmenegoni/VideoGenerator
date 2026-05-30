@@ -55,8 +55,12 @@ class VideoGeneratorApp:
         self.subtitle_preview_text = StringVar(value="Hoje vamos falar sobre a China.")
         self.chatgpt_shortcut = StringVar(value="alt+c")
         self.chatgpt_response_wait = StringVar(value="8")
+        self.chatgpt_send_wait = StringVar(value="1")
+        self.chatgpt_menu_wait = StringVar(value="1")
         self.chatgpt_menu_x = StringVar(value="0")
         self.chatgpt_menu_y = StringVar(value="0")
+        self.chatgpt_send_x = StringVar(value="0")
+        self.chatgpt_send_y = StringVar(value="0")
         self.chatgpt_read_x = StringVar(value="0")
         self.chatgpt_read_y = StringVar(value="0")
         self.chatgpt_record_extra = StringVar(value="2")
@@ -311,36 +315,67 @@ class VideoGeneratorApp:
         top = Frame(parent, bg="#ffffff")
         top.pack(fill=X)
         ttk.Label(top, text="Audio", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Configure a automação do app do ChatGPT para gerar e gravar a narração.", style="Muted.TLabel").pack(anchor="w", pady=(4, 18))
+        ttk.Label(top, text="Configure a automação do app do ChatGPT para gerar e gravar a narração.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
+
+        canvas = Canvas(parent, bd=0, highlightthickness=0, bg="#ffffff")
+        canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        scrollbar.pack(side=RIGHT, fill=Y)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        content = Frame(canvas, bg="#ffffff")
+        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
+        content.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(content_window, width=event.width))
+        canvas.bind("<MouseWheel>", lambda event: canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
 
         instructions = (
             "Fluxo usado: abrir o ChatGPT pelo atalho, enviar 'Apenas repita isso: [frase]', "
-            "aguardar resposta, clicar nos 3 pontinhos, clicar em 'Ler em voz alta' e gravar o áudio do sistema."
+            "clicar no botão de enviar, aguardar resposta, clicar nos 3 pontinhos, esperar 1 segundo, clicar em 'Ler em voz alta' e gravar o áudio do sistema."
         )
-        Label(parent, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
+        Label(content, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
 
-        self._entry_row(parent, "Atalho para abrir o ChatGPT", self.chatgpt_shortcut, "Padrão: alt+c. Separe teclas com +, por exemplo: ctrl+shift+g.")
-        self._entry_row(parent, "Aguardar resposta do ChatGPT (segundos)", self.chatgpt_response_wait, "Tempo antes de clicar nos 3 pontinhos.")
+        shortcut_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
+        shortcut_card.pack(fill=X, pady=(0, 12))
+        self._entry_row(shortcut_card, "Atalho para abrir o ChatGPT", self.chatgpt_shortcut, "Padrão: alt+c. Separe teclas com +, por exemplo: ctrl+shift+g.")
+        self._entry_row(shortcut_card, "Esperar antes de enviar (segundos)", self.chatgpt_send_wait, "Tempo para o app do ChatGPT focar no campo de mensagem antes de clicar no botão de enviar.")
+        self._entry_row(shortcut_card, "Aguardar resposta do ChatGPT (segundos)", self.chatgpt_response_wait, "Tempo antes de clicar nos 3 pontinhos.")
+        self._entry_row(shortcut_card, "Esperar após 3 pontinhos (segundos)", self.chatgpt_menu_wait, "Padrão: 1 segundo antes de clicar em Ler em voz alta.")
 
-        coords = Frame(parent, bg="#ffffff")
+        coords_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
+        coords_card.pack(fill=X, pady=(0, 12))
+        Label(coords_card, text="Coordenadas dos cliques", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
+        coords = Frame(coords_card, bg="#f8f9fd")
         coords.pack(fill=X)
-        left = Frame(coords, bg="#ffffff")
+        left = Frame(coords, bg="#f8f9fd")
         left.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
-        right = Frame(coords, bg="#ffffff")
+        right = Frame(coords, bg="#f8f9fd")
         right.pack(side=LEFT, fill=BOTH, expand=True)
         self._entry_row(left, "X dos 3 pontinhos", self.chatgpt_menu_x, "Clique no menu da resposta do ChatGPT.")
         self._entry_row(right, "Y dos 3 pontinhos", self.chatgpt_menu_y, "Use a coordenada da tela em pixels.")
 
-        coords_read = Frame(parent, bg="#ffffff")
+        coords_send = Frame(coords_card, bg="#f8f9fd")
+        coords_send.pack(fill=X)
+        left_send = Frame(coords_send, bg="#f8f9fd")
+        left_send.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
+        right_send = Frame(coords_send, bg="#f8f9fd")
+        right_send.pack(side=LEFT, fill=BOTH, expand=True)
+        self._entry_row(left_send, "X do botão Enviar", self.chatgpt_send_x, "Clique no botão de enviar mensagem do ChatGPT.")
+        self._entry_row(right_send, "Y do botão Enviar", self.chatgpt_send_y, "Use a coordenada da tela em pixels.")
+
+        coords_read = Frame(coords_card, bg="#f8f9fd")
         coords_read.pack(fill=X)
-        left_read = Frame(coords_read, bg="#ffffff")
+        left_read = Frame(coords_read, bg="#f8f9fd")
         left_read.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
-        right_read = Frame(coords_read, bg="#ffffff")
+        right_read = Frame(coords_read, bg="#f8f9fd")
         right_read.pack(side=LEFT, fill=BOTH, expand=True)
         self._entry_row(left_read, "X do Ler em voz alta", self.chatgpt_read_x, "Clique na opção do menu.")
         self._entry_row(right_read, "Y do Ler em voz alta", self.chatgpt_read_y, "Use a coordenada da tela em pixels.")
 
-        self._entry_row(parent, "Tempo extra de gravação (segundos)", self.chatgpt_record_extra, "O app estima a duração pela quantidade de caracteres e soma esse extra.")
+        recording_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
+        recording_card.pack(fill=X, pady=(0, 12))
+        self._entry_row(recording_card, "Tempo extra de gravação (segundos)", self.chatgpt_record_extra, "O app estima a duração pela quantidade de caracteres e soma esse extra.")
+        Label(recording_card, text="Dica: se as últimas opções não aparecerem, use a barra de rolagem desta aba.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w")
 
     def _build_music_tab(self, parent: Frame) -> None:
         top = Frame(parent, bg="#ffffff")
@@ -393,8 +428,12 @@ class VideoGeneratorApp:
                 self.subtitle_preview_text.set(data.get("subtitle_preview_text", self.subtitle_preview_text.get()))
                 self.chatgpt_shortcut.set(data.get("chatgpt_shortcut", self.chatgpt_shortcut.get()))
                 self.chatgpt_response_wait.set(data.get("chatgpt_response_wait", self.chatgpt_response_wait.get()))
+                self.chatgpt_send_wait.set(data.get("chatgpt_send_wait", self.chatgpt_send_wait.get()))
+                self.chatgpt_menu_wait.set(data.get("chatgpt_menu_wait", self.chatgpt_menu_wait.get()))
                 self.chatgpt_menu_x.set(data.get("chatgpt_menu_x", self.chatgpt_menu_x.get()))
                 self.chatgpt_menu_y.set(data.get("chatgpt_menu_y", self.chatgpt_menu_y.get()))
+                self.chatgpt_send_x.set(data.get("chatgpt_send_x", self.chatgpt_send_x.get()))
+                self.chatgpt_send_y.set(data.get("chatgpt_send_y", self.chatgpt_send_y.get()))
                 self.chatgpt_read_x.set(data.get("chatgpt_read_x", self.chatgpt_read_x.get()))
                 self.chatgpt_read_y.set(data.get("chatgpt_read_y", self.chatgpt_read_y.get()))
                 self.chatgpt_record_extra.set(data.get("chatgpt_record_extra", self.chatgpt_record_extra.get()))
@@ -419,8 +458,12 @@ class VideoGeneratorApp:
             "subtitle_preview_text": self.subtitle_preview_text.get().strip(),
             "chatgpt_shortcut": self.chatgpt_shortcut.get().strip(),
             "chatgpt_response_wait": self.chatgpt_response_wait.get().strip(),
+            "chatgpt_send_wait": self.chatgpt_send_wait.get().strip(),
+            "chatgpt_menu_wait": self.chatgpt_menu_wait.get().strip(),
             "chatgpt_menu_x": self.chatgpt_menu_x.get().strip(),
             "chatgpt_menu_y": self.chatgpt_menu_y.get().strip(),
+            "chatgpt_send_x": self.chatgpt_send_x.get().strip(),
+            "chatgpt_send_y": self.chatgpt_send_y.get().strip(),
             "chatgpt_read_x": self.chatgpt_read_x.get().strip(),
             "chatgpt_read_y": self.chatgpt_read_y.get().strip(),
             "chatgpt_record_extra": self.chatgpt_record_extra.get().strip(),
@@ -492,7 +535,7 @@ class VideoGeneratorApp:
             self._show_tab("apis")
             return
         if not self._chatgpt_coordinates_ready():
-            messagebox.showerror(APP_TITLE, "Configure as coordenadas dos 3 pontinhos e do Ler em voz alta na aba Audio.")
+            messagebox.showerror(APP_TITLE, "Configure as coordenadas do botão Enviar, dos 3 pontinhos e do Ler em voz alta na aba Audio.")
             self._show_tab("audio")
             return
         out_dir = Path(self.output_dir.get()).expanduser()
@@ -558,10 +601,14 @@ class VideoGeneratorApp:
             shortcut_keys = ["alt", "c"]
 
         pyautogui.hotkey(*shortcut_keys)
-        time.sleep(1.2)
+        time.sleep(self._safe_float(self.chatgpt_send_wait.get(), 1.0, 0.2, 10.0))
         pyperclip.copy(prompt)
+        pyautogui.hotkey("ctrl", "a")
         pyautogui.hotkey("ctrl", "v")
-        pyautogui.press("enter")
+        time.sleep(0.2)
+        send_x = self._safe_int(self.chatgpt_send_x.get(), 0, 0, 10000)
+        send_y = self._safe_int(self.chatgpt_send_y.get(), 0, 0, 10000)
+        pyautogui.click(send_x, send_y)
 
         wait_seconds = self._safe_float(self.chatgpt_response_wait.get(), 8.0, 1.0, 120.0)
         time.sleep(wait_seconds)
@@ -571,9 +618,9 @@ class VideoGeneratorApp:
         read_x = self._safe_int(self.chatgpt_read_x.get(), 0, 0, 10000)
         read_y = self._safe_int(self.chatgpt_read_y.get(), 0, 0, 10000)
         pyautogui.click(menu_x, menu_y)
-        time.sleep(0.4)
+        time.sleep(self._safe_float(self.chatgpt_menu_wait.get(), 1.0, 0.2, 10.0))
         pyautogui.click(read_x, read_y)
-        time.sleep(0.2)
+        time.sleep(0.1)
 
         record_duration = self._estimated_tts_duration(text)
         self._record_system_audio(output_path, record_duration)
@@ -634,7 +681,14 @@ class VideoGeneratorApp:
         return audio[start : end + 1]
 
     def _chatgpt_coordinates_ready(self) -> bool:
-        values = [self.chatgpt_menu_x.get(), self.chatgpt_menu_y.get(), self.chatgpt_read_x.get(), self.chatgpt_read_y.get()]
+        values = [
+            self.chatgpt_send_x.get(),
+            self.chatgpt_send_y.get(),
+            self.chatgpt_menu_x.get(),
+            self.chatgpt_menu_y.get(),
+            self.chatgpt_read_x.get(),
+            self.chatgpt_read_y.get(),
+        ]
         return all(self._safe_int(value, 0, 0, 10000) > 0 for value in values)
 
     def _download_media(self, line: ScriptLine, workdir: Path, index: int) -> Path:
