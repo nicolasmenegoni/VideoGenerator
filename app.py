@@ -11,6 +11,7 @@ import threading
 import urllib.parse
 import wave
 from dataclasses import dataclass
+from typing import Any
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Button, Canvas, Entry, Frame, Label, StringVar, Text, Tk, Toplevel, filedialog, messagebox, ttk
 
@@ -31,6 +32,39 @@ FPS = "30"
 class ScriptLine:
     text: str
     media_url: str = ""
+
+
+@dataclass
+class ScreenPoint:
+    x: int
+    y: int
+
+
+@dataclass
+class ScreenBounds:
+    left: int
+    top: int
+    right: int
+    bottom: int
+
+    @property
+    def width(self) -> int:
+        return self.right - self.left
+
+    @property
+    def height(self) -> int:
+        return self.bottom - self.top
+
+    @property
+    def center(self) -> ScreenPoint:
+        return ScreenPoint(self.left + self.width // 2, self.top + self.height // 2)
+
+
+@dataclass
+class WindowCapture:
+    image: Any
+    offset_x: int
+    offset_y: int
 
 
 class VideoGeneratorApp:
@@ -334,56 +368,35 @@ class VideoGeneratorApp:
         canvas.bind("<MouseWheel>", lambda event: canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
 
         instructions = (
-            "Fluxo usado: abrir o ChatGPT pelo atalho, enviar 'Apenas repita isso: [frase]', "
-            "clicar no campo de texto, digitar, clicar no botão de enviar, aguardar resposta, clicar nos 3 pontinhos, esperar 1 segundo, clicar em 'Ler em voz alta' e gravar o áudio do sistema."
+            "Fluxo usado: abrir o ChatGPT pelo atalho, capturar a janela, localizar automaticamente o campo de texto "
+            "e o botão Enviar pela imagem, enviar 'Apenas repita isso: [frase]', aguardar a resposta, capturar novamente, "
+            "localizar os 3 pontinhos da resposta, abrir o menu, identificar a área nova do menu e clicar em 'Ler em voz alta'."
         )
         Label(content, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
 
         shortcut_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
         shortcut_card.pack(fill=X, pady=(0, 12))
         self._entry_row(shortcut_card, "Atalho para abrir o ChatGPT", self.chatgpt_shortcut, "Padrão: alt+c. Separe teclas com +, por exemplo: ctrl+shift+g.")
-        self._entry_row(shortcut_card, "Esperar antes de enviar (segundos)", self.chatgpt_send_wait, "Tempo para o app do ChatGPT focar no campo de mensagem antes de clicar no botão de enviar.")
-        self._entry_row(shortcut_card, "Aguardar resposta do ChatGPT (segundos)", self.chatgpt_response_wait, "Tempo antes de clicar nos 3 pontinhos.")
-        self._entry_row(shortcut_card, "Esperar após 3 pontinhos (segundos)", self.chatgpt_menu_wait, "Padrão: 1 segundo antes de clicar em Ler em voz alta.")
+        self._entry_row(shortcut_card, "Esperar antes de capturar/enviar (segundos)", self.chatgpt_send_wait, "Tempo para o app do ChatGPT abrir antes da captura automática da janela.")
+        self._entry_row(shortcut_card, "Aguardar resposta do ChatGPT (segundos)", self.chatgpt_response_wait, "Tempo antes de capturar a tela e procurar os 3 pontinhos da resposta.")
+        self._entry_row(shortcut_card, "Esperar após 3 pontinhos (segundos)", self.chatgpt_menu_wait, "Padrão: 1 segundo antes de capturar o menu e clicar em Ler em voz alta.")
 
-        coords_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
-        coords_card.pack(fill=X, pady=(0, 12))
-        Label(coords_card, text="Coordenadas dos cliques", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
-        coords_input = Frame(coords_card, bg="#f8f9fd")
-        coords_input.pack(fill=X)
-        left_input = Frame(coords_input, bg="#f8f9fd")
-        left_input.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
-        right_input = Frame(coords_input, bg="#f8f9fd")
-        right_input.pack(side=LEFT, fill=BOTH, expand=True)
-        self._entry_row(left_input, "X do campo de texto", self.chatgpt_input_x, "Clique no lugar onde digita a mensagem do ChatGPT.")
-        self._entry_row(right_input, "Y do campo de texto", self.chatgpt_input_y, "Use a coordenada da tela em pixels.")
-
-        coords_send = Frame(coords_card, bg="#f8f9fd")
-        coords_send.pack(fill=X)
-        left_send = Frame(coords_send, bg="#f8f9fd")
-        left_send.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
-        right_send = Frame(coords_send, bg="#f8f9fd")
-        right_send.pack(side=LEFT, fill=BOTH, expand=True)
-        self._entry_row(left_send, "X do botão Enviar", self.chatgpt_send_x, "Clique no botão de enviar mensagem do ChatGPT.")
-        self._entry_row(right_send, "Y do botão Enviar", self.chatgpt_send_y, "Use a coordenada da tela em pixels.")
-
-        coords = Frame(coords_card, bg="#f8f9fd")
-        coords.pack(fill=X)
-        left = Frame(coords, bg="#f8f9fd")
-        left.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
-        right = Frame(coords, bg="#f8f9fd")
-        right.pack(side=LEFT, fill=BOTH, expand=True)
-        self._entry_row(left, "X dos 3 pontinhos", self.chatgpt_menu_x, "Clique no menu da resposta do ChatGPT.")
-        self._entry_row(right, "Y dos 3 pontinhos", self.chatgpt_menu_y, "Use a coordenada da tela em pixels.")
-
-        coords_read = Frame(coords_card, bg="#f8f9fd")
-        coords_read.pack(fill=X)
-        left_read = Frame(coords_read, bg="#f8f9fd")
-        left_read.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
-        right_read = Frame(coords_read, bg="#f8f9fd")
-        right_read.pack(side=LEFT, fill=BOTH, expand=True)
-        self._entry_row(left_read, "X do Ler em voz alta", self.chatgpt_read_x, "Clique na opção do menu.")
-        self._entry_row(right_read, "Y do Ler em voz alta", self.chatgpt_read_y, "Use a coordenada da tela em pixels.")
+        auto_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
+        auto_card.pack(fill=X, pady=(0, 12))
+        Label(auto_card, text="Detecção automática pela janela", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
+        Label(
+            auto_card,
+            text=(
+                "Não é mais necessário informar coordenadas. Deixe o app do ChatGPT visível em tema escuro: "
+                "o VideoGenerator captura a janela ativa, encontra o campo de mensagem, o botão Enviar, "
+                "os 3 pontinhos da resposta e a opção Ler em voz alta automaticamente."
+            ),
+            bg="#f8f9fd",
+            fg="#657084",
+            wraplength=720,
+            justify=LEFT,
+            font=("Segoe UI", 9),
+        ).pack(anchor="w")
 
         recording_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
         recording_card.pack(fill=X, pady=(0, 12))
@@ -551,10 +564,6 @@ class VideoGeneratorApp:
             messagebox.showerror(APP_TITLE, "Informe a chave de API do Pexels na aba APIs.")
             self._show_tab("apis")
             return
-        if not self._chatgpt_coordinates_ready():
-            messagebox.showerror(APP_TITLE, "Configure as coordenadas do campo de texto, botão Enviar, 3 pontinhos e Ler em voz alta na aba Audio.")
-            self._show_tab("audio")
-            return
         out_dir = Path(self.output_dir.get()).expanduser()
         out_dir.mkdir(parents=True, exist_ok=True)
         self._save_config()
@@ -619,32 +628,210 @@ class VideoGeneratorApp:
 
         pyautogui.hotkey(*shortcut_keys)
         time.sleep(self._safe_float(self.chatgpt_send_wait.get(), 1.0, 0.2, 10.0))
-        input_x = self._safe_int(self.chatgpt_input_x.get(), 0, 0, 10000)
-        input_y = self._safe_int(self.chatgpt_input_y.get(), 0, 0, 10000)
-        pyautogui.click(input_x, input_y)
+
+        initial_capture = self._capture_chatgpt_window()
+        composer = self._find_chatgpt_composer(initial_capture.image)
+        input_point = self._to_screen(initial_capture, self._composer_input_point(composer))
+        pyautogui.click(input_point.x, input_point.y)
         time.sleep(0.2)
         pyperclip.copy(prompt)
         pyautogui.hotkey("ctrl", "a")
         pyautogui.hotkey("ctrl", "v")
         time.sleep(0.2)
-        send_x = self._safe_int(self.chatgpt_send_x.get(), 0, 0, 10000)
-        send_y = self._safe_int(self.chatgpt_send_y.get(), 0, 0, 10000)
-        pyautogui.click(send_x, send_y)
+
+        typed_capture = self._capture_chatgpt_window()
+        typed_composer = self._find_chatgpt_composer(typed_capture.image)
+        send_point = self._to_screen(typed_capture, self._find_chatgpt_send_button(typed_capture.image, typed_composer))
+        pyautogui.click(send_point.x, send_point.y)
 
         wait_seconds = self._safe_float(self.chatgpt_response_wait.get(), 8.0, 1.0, 120.0)
         time.sleep(wait_seconds)
 
-        menu_x = self._safe_int(self.chatgpt_menu_x.get(), 0, 0, 10000)
-        menu_y = self._safe_int(self.chatgpt_menu_y.get(), 0, 0, 10000)
-        read_x = self._safe_int(self.chatgpt_read_x.get(), 0, 0, 10000)
-        read_y = self._safe_int(self.chatgpt_read_y.get(), 0, 0, 10000)
-        pyautogui.click(menu_x, menu_y)
+        response_capture = self._capture_chatgpt_window()
+        menu_point = self._to_screen(response_capture, self._find_response_more_button(response_capture.image))
+        pyautogui.click(menu_point.x, menu_point.y)
         time.sleep(self._safe_float(self.chatgpt_menu_wait.get(), 1.0, 0.2, 10.0))
-        pyautogui.click(read_x, read_y)
+
+        menu_capture = self._capture_chatgpt_window()
+        read_point = self._to_screen(menu_capture, self._find_read_aloud_point(response_capture.image, menu_capture.image, menu_point, menu_capture))
+        pyautogui.click(read_point.x, read_point.y)
         time.sleep(0.1)
 
         record_duration = self._estimated_tts_duration(text)
         self._record_system_audio(output_path, record_duration)
+
+    def _capture_chatgpt_window(self) -> WindowCapture:
+        window = None
+        try:
+            if hasattr(pyautogui, "getActiveWindow"):
+                window = pyautogui.getActiveWindow()
+        except Exception:
+            window = None
+
+        if window and getattr(window, "width", 0) > 200 and getattr(window, "height", 0) > 200:
+            left = max(int(window.left), 0)
+            top = max(int(window.top), 0)
+            width = int(window.width)
+            height = int(window.height)
+            return WindowCapture(pyautogui.screenshot(region=(left, top, width, height)), left, top)
+
+        return WindowCapture(pyautogui.screenshot(), 0, 0)
+
+    @staticmethod
+    def _to_screen(capture: WindowCapture, point: ScreenPoint) -> ScreenPoint:
+        return ScreenPoint(capture.offset_x + point.x, capture.offset_y + point.y)
+
+    @staticmethod
+    def _image_array(image: Any) -> np.ndarray:
+        if hasattr(image, "convert"):
+            image = image.convert("RGB")
+        array = np.asarray(image)
+        if array.ndim == 2:
+            array = np.repeat(array[:, :, None], 3, axis=2)
+        if array.shape[2] > 3:
+            array = array[:, :, :3]
+        return array.astype(np.int16)
+
+    def _find_chatgpt_composer(self, image: Any) -> ScreenBounds:
+        array = self._image_array(image)
+        height, width, _ = array.shape
+        channels_spread = array.max(axis=2) - array.min(axis=2)
+        gray_mask = (
+            (array[:, :, 0] >= 24)
+            & (array[:, :, 0] <= 62)
+            & (array[:, :, 1] >= 24)
+            & (array[:, :, 1] <= 62)
+            & (array[:, :, 2] >= 24)
+            & (array[:, :, 2] <= 62)
+            & (channels_spread <= 12)
+        )
+        gray_mask[: int(height * 0.45), :] = False
+
+        row_counts = gray_mask.sum(axis=1)
+        row_threshold = max(80, int(width * 0.25))
+        segments: list[tuple[int, int]] = []
+        segment_start: int | None = None
+        for row, count in enumerate(row_counts):
+            if count >= row_threshold and segment_start is None:
+                segment_start = row
+            elif count < row_threshold and segment_start is not None:
+                if row - segment_start >= 35:
+                    segments.append((segment_start, row))
+                segment_start = None
+        if segment_start is not None and height - segment_start >= 35:
+            segments.append((segment_start, height))
+        if not segments:
+            raise RuntimeError("Não consegui localizar automaticamente o campo de mensagem do ChatGPT. Deixe a janela visível em tema escuro e tente novamente.")
+
+        top, bottom = max(segments, key=lambda item: item[1])
+        band = gray_mask[top:bottom, :]
+        col_counts = band.sum(axis=0)
+        col_threshold = max(20, int((bottom - top) * 0.25))
+        cols = np.where(col_counts >= col_threshold)[0]
+        if cols.size == 0:
+            raise RuntimeError("Capturei a janela do ChatGPT, mas não consegui medir o campo de mensagem.")
+        return ScreenBounds(int(cols[0]), int(top), int(cols[-1]) + 1, int(bottom))
+
+    @staticmethod
+    def _composer_input_point(composer: ScreenBounds) -> ScreenPoint:
+        return ScreenPoint(composer.left + min(max(composer.width // 4, 80), 180), composer.top + composer.height // 2)
+
+    def _find_chatgpt_send_button(self, image: Any, composer: ScreenBounds) -> ScreenPoint:
+        array = self._image_array(image)
+        search_left = composer.left + int(composer.width * 0.68)
+        search = array[composer.top : composer.bottom, search_left : composer.right]
+        white_mask = (search[:, :, 0] >= 225) & (search[:, :, 1] >= 225) & (search[:, :, 2] >= 225)
+        ys, xs = np.where(white_mask)
+        if ys.size:
+            components = self._components(white_mask, min_area=60)
+            if components:
+                best = max(components, key=lambda bounds: bounds.width * bounds.height)
+                return ScreenPoint(search_left + best.center.x, composer.top + best.center.y)
+            return ScreenPoint(search_left + int(np.median(xs)), composer.top + int(np.median(ys)))
+        return ScreenPoint(composer.right - 36, composer.top + composer.height // 2)
+
+    def _find_response_more_button(self, image: Any) -> ScreenPoint:
+        array = self._image_array(image)
+        height, width, _ = array.shape
+        bright_mask = (array[:, :, 0] >= 215) & (array[:, :, 1] >= 215) & (array[:, :, 2] >= 215)
+        bright_mask[: int(height * 0.14), :] = False
+        try:
+            composer = self._find_chatgpt_composer(image)
+            bright_mask[max(composer.top - 20, 0) :, :] = False
+        except RuntimeError:
+            bright_mask[int(height * 0.82) :, :] = False
+
+        tiny = [component for component in self._components(bright_mask, min_area=2) if 1 <= component.width <= 8 and 1 <= component.height <= 8]
+        centers = [component.center for component in tiny]
+        candidates: list[ScreenPoint] = []
+        for first in centers:
+            neighbors = [point for point in centers if abs(point.y - first.y) <= 4 and 4 <= point.x - first.x <= 28]
+            for second in neighbors:
+                third_options = [point for point in centers if abs(point.y - first.y) <= 4 and 4 <= point.x - second.x <= 28]
+                for third in third_options:
+                    span = third.x - first.x
+                    if 10 <= span <= 36:
+                        candidates.append(ScreenPoint((first.x + third.x) // 2, int(round((first.y + second.y + third.y) / 3))))
+        if not candidates:
+            raise RuntimeError("Não consegui localizar os 3 pontinhos da resposta do ChatGPT na captura da janela.")
+
+        left_side = [point for point in candidates if point.x < int(width * 0.55)]
+        usable = left_side or candidates
+        return max(usable, key=lambda point: (point.y, -abs(point.x - width // 3)))
+
+    def _find_read_aloud_point(self, before_image: Any, after_image: Any, clicked_menu_point: ScreenPoint, after_capture: WindowCapture) -> ScreenPoint:
+        before = self._image_array(before_image)
+        after = self._image_array(after_image)
+        min_height = min(before.shape[0], after.shape[0])
+        min_width = min(before.shape[1], after.shape[1])
+        diff = np.abs(after[:min_height, :min_width] - before[:min_height, :min_width]).max(axis=2)
+        changed_mask = diff > 25
+        components = [component for component in self._components(changed_mask, min_area=120) if component.width > 30 and component.height > 12]
+
+        local_click = ScreenPoint(clicked_menu_point.x - after_capture.offset_x, clicked_menu_point.y - after_capture.offset_y)
+        if components:
+            nearby = [
+                component
+                for component in components
+                if abs(component.center.x - local_click.x) <= 320 and abs(component.center.y - local_click.y) <= 320
+            ]
+            component = max(nearby or components, key=lambda bounds: bounds.width * bounds.height)
+            return ScreenPoint(component.left + min(max(component.width // 2, 70), component.width - 12), component.top + min(28, max(12, component.height // 3)))
+
+        return ScreenPoint(local_click.x + 90, local_click.y + 36)
+
+    @staticmethod
+    def _components(mask: np.ndarray, min_area: int = 1) -> list[ScreenBounds]:
+        height, width = mask.shape
+        visited = np.zeros(mask.shape, dtype=bool)
+        components: list[ScreenBounds] = []
+        for y in range(height):
+            xs = np.where(mask[y] & ~visited[y])[0]
+            for x_start in xs:
+                if visited[y, x_start] or not mask[y, x_start]:
+                    continue
+                stack = [(int(x_start), y)]
+                visited[y, x_start] = True
+                min_x = max_x = int(x_start)
+                min_y = max_y = y
+                area = 0
+                while stack:
+                    x, current_y = stack.pop()
+                    area += 1
+                    min_x = min(min_x, x)
+                    max_x = max(max_x, x)
+                    min_y = min(min_y, current_y)
+                    max_y = max(max_y, current_y)
+                    for nx in (x - 1, x, x + 1):
+                        for ny in (current_y - 1, current_y, current_y + 1):
+                            if nx == x and ny == current_y:
+                                continue
+                            if 0 <= nx < width and 0 <= ny < height and not visited[ny, nx] and mask[ny, nx]:
+                                visited[ny, nx] = True
+                                stack.append((nx, ny))
+                if area >= min_area:
+                    components.append(ScreenBounds(min_x, min_y, max_x + 1, max_y + 1))
+        return components
 
     def _record_system_audio(self, output_path: Path, duration: float) -> None:
         sample_rate = 48000
