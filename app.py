@@ -628,6 +628,10 @@ class VideoGeneratorApp:
 
         pyautogui.hotkey(*shortcut_keys)
         time.sleep(self._safe_float(self.chatgpt_send_wait.get(), 1.0, 0.2, 10.0))
+        pyautogui.press("esc")
+        time.sleep(0.15)
+        pyautogui.hotkey("ctrl", "end")
+        time.sleep(0.15)
 
         initial_capture = self._capture_chatgpt_window()
         composer = self._find_chatgpt_composer(initial_capture.image)
@@ -697,13 +701,13 @@ class VideoGeneratorApp:
         height, width, _ = array.shape
         channels_spread = array.max(axis=2) - array.min(axis=2)
         gray_mask = (
-            (array[:, :, 0] >= 24)
-            & (array[:, :, 0] <= 62)
-            & (array[:, :, 1] >= 24)
-            & (array[:, :, 1] <= 62)
-            & (array[:, :, 2] >= 24)
-            & (array[:, :, 2] <= 62)
-            & (channels_spread <= 12)
+            (array[:, :, 0] >= 16)
+            & (array[:, :, 0] <= 82)
+            & (array[:, :, 1] >= 16)
+            & (array[:, :, 1] <= 82)
+            & (array[:, :, 2] >= 16)
+            & (array[:, :, 2] <= 82)
+            & (channels_spread <= 18)
         )
         gray_mask[: int(height * 0.45), :] = False
 
@@ -721,7 +725,7 @@ class VideoGeneratorApp:
         if segment_start is not None and height - segment_start >= 35:
             segments.append((segment_start, height))
         if not segments:
-            raise RuntimeError("Não consegui localizar automaticamente o campo de mensagem do ChatGPT. Deixe a janela visível em tema escuro e tente novamente.")
+            return self._fallback_chatgpt_composer(width, height)
 
         top, bottom = max(segments, key=lambda item: item[1])
         band = gray_mask[top:bottom, :]
@@ -729,8 +733,21 @@ class VideoGeneratorApp:
         col_threshold = max(20, int((bottom - top) * 0.25))
         cols = np.where(col_counts >= col_threshold)[0]
         if cols.size == 0:
-            raise RuntimeError("Capturei a janela do ChatGPT, mas não consegui medir o campo de mensagem.")
-        return ScreenBounds(int(cols[0]), int(top), int(cols[-1]) + 1, int(bottom))
+            return self._fallback_chatgpt_composer(width, height)
+        left = max(int(cols[0]), int(width * 0.02))
+        right = min(int(cols[-1]) + 1, int(width * 0.98))
+        if bottom - top < 35 or right - left < max(120, int(width * 0.25)):
+            return self._fallback_chatgpt_composer(width, height)
+        return ScreenBounds(left, int(top), right, int(bottom))
+
+    @staticmethod
+    def _fallback_chatgpt_composer(width: int, height: int) -> ScreenBounds:
+        return ScreenBounds(
+            max(12, int(width * 0.035)),
+            max(0, height - max(120, int(height * 0.16))),
+            min(width - 12, int(width * 0.965)),
+            max(1, height - max(24, int(height * 0.04))),
+        )
 
     @staticmethod
     def _composer_input_point(composer: ScreenBounds) -> ScreenPoint:
@@ -796,9 +813,11 @@ class VideoGeneratorApp:
                 if abs(component.center.x - local_click.x) <= 320 and abs(component.center.y - local_click.y) <= 320
             ]
             component = max(nearby or components, key=lambda bounds: bounds.width * bounds.height)
-            return ScreenPoint(component.left + min(max(component.width // 2, 70), component.width - 12), component.top + min(28, max(12, component.height // 3)))
+            read_x = component.left + min(max(int(component.width * 0.28), 70), component.width - 12)
+            read_y = component.bottom - min(max(component.height // 7, 24), 36)
+            return ScreenPoint(read_x, read_y)
 
-        return ScreenPoint(local_click.x + 90, local_click.y + 36)
+        return ScreenPoint(local_click.x + 90, max(local_click.y - 55, 0))
 
     @staticmethod
     def _components(mask: np.ndarray, min_area: int = 1) -> list[ScreenBounds]:
