@@ -1,3 +1,6 @@
-google-genai>=1.44.0
 imageio-ffmpeg>=0.5.1
+numpy>=1.26.0
+pyautogui>=0.9.54
+pyperclip>=1.9.0
 requests>=2.32.0
+soundcard>=0.4.3
