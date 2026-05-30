@@ -374,8 +374,8 @@ class VideoGeneratorApp:
 
         instructions = (
             "Fluxo usado: abrir o ChatGPT pelo atalho, capturar a janela, localizar automaticamente o campo de texto "
-            "e o botão Enviar pela imagem, enviar 'Apenas repita isso: [frase]', aguardar a resposta, capturar novamente, "
-            "localizar os 3 pontinhos da resposta, abrir o menu, identificar a área nova do menu e clicar em 'Ler em voz alta'."
+            "e o botão Enviar pela imagem, enviar 'Apenas repita isso com aspas: [frase]', verificar a tela até "
+            "os 3 pontinhos aparecerem abaixo da resposta completa, abrir o menu, identificar a área nova e clicar em 'Ler em voz alta'."
         )
         Label(content, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
 
@@ -383,7 +383,7 @@ class VideoGeneratorApp:
         shortcut_card.pack(fill=X, pady=(0, 12))
         self._entry_row(shortcut_card, "Atalho para abrir o ChatGPT", self.chatgpt_shortcut, "Padrão: alt+c. Separe teclas com +, por exemplo: ctrl+shift+g.")
         self._entry_row(shortcut_card, "Esperar antes de capturar/enviar (segundos)", self.chatgpt_send_wait, "Tempo para o app do ChatGPT abrir antes da captura automática da janela.")
-        self._entry_row(shortcut_card, "Aguardar resposta do ChatGPT (segundos)", self.chatgpt_response_wait, "Tempo antes de capturar a tela e procurar os 3 pontinhos da resposta.")
+        self._entry_row(shortcut_card, "Tempo máximo para resposta (segundos)", self.chatgpt_response_wait, "Limite para ficar verificando a tela até os 3 pontinhos da resposta aparecerem.")
         self._entry_row(shortcut_card, "Esperar após 3 pontinhos (segundos)", self.chatgpt_menu_wait, "Padrão: 1 segundo antes de capturar o menu e clicar em Ler em voz alta.")
 
         auto_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
@@ -639,7 +639,8 @@ class VideoGeneratorApp:
             self.message_queue.put(("error", str(exc)))
 
     def _generate_tts(self, text: str, output_path: Path) -> None:
-        prompt = f"Apenas repita isso: {text}"
+        quoted_text = text.replace('"', "'")
+        prompt = f'Apenas repita isso com aspas: "{quoted_text}"'
         shortcut_keys = [part.strip().lower() for part in self.chatgpt_shortcut.get().split("+") if part.strip()]
         if not shortcut_keys:
             shortcut_keys = ["alt", "c"]
@@ -671,10 +672,8 @@ class VideoGeneratorApp:
         pyautogui.click(send_point.x, send_point.y)
 
         wait_seconds = self._safe_float(self.chatgpt_response_wait.get(), 8.0, 1.0, 120.0)
-        time.sleep(wait_seconds)
-
-        response_capture = self._capture_chatgpt_window()
-        menu_point = self._to_screen(response_capture, self._find_response_more_button(response_capture.image))
+        response_capture, local_menu_point = self._wait_for_response_more_button(typed_capture, wait_seconds)
+        menu_point = self._to_screen(response_capture, local_menu_point)
         pyautogui.click(menu_point.x, menu_point.y)
         time.sleep(self._safe_float(self.chatgpt_menu_wait.get(), 1.0, 0.2, 10.0))
 
@@ -789,9 +788,36 @@ class VideoGeneratorApp:
             return ScreenPoint(search_left + int(np.median(xs)), composer.top + int(np.median(ys)))
         return ScreenPoint(composer.right - 36, composer.top + composer.height // 2)
 
+    def _wait_for_response_more_button(self, before_capture: WindowCapture, timeout: float) -> tuple[WindowCapture, ScreenPoint]:
+        deadline = time.time() + max(timeout, 30.0)
+        last_capture: WindowCapture | None = None
+        last_candidates: list[ScreenPoint] = []
+        time.sleep(1.0)
+        while time.time() < deadline:
+            capture = self._capture_chatgpt_window()
+            candidates = self._response_more_candidates(capture.image)
+            if candidates:
+                changed_candidate = self._best_changed_more_candidate(before_capture.image, capture.image, candidates)
+                if changed_candidate is not None:
+                    return capture, changed_candidate
+                last_capture = capture
+                last_candidates = candidates
+            time.sleep(0.6)
+
+        if last_capture and last_candidates:
+            return last_capture, self._select_response_more_candidate(last_capture.image, last_candidates)
+        capture = self._capture_chatgpt_window()
+        return capture, self._find_response_more_button(capture.image)
+
     def _find_response_more_button(self, image: Any) -> ScreenPoint:
+        candidates = self._response_more_candidates(image)
+        if not candidates:
+            raise RuntimeError("Não consegui localizar os 3 pontinhos da resposta do ChatGPT na captura da janela.")
+        return self._select_response_more_candidate(image, candidates)
+
+    def _response_more_candidates(self, image: Any) -> list[ScreenPoint]:
         array = self._image_array(image)
-        height, width, _ = array.shape
+        height, _, _ = array.shape
         bright_mask = (array[:, :, 0] >= 215) & (array[:, :, 1] >= 215) & (array[:, :, 2] >= 215)
         bright_mask[: int(height * 0.14), :] = False
         try:
@@ -810,13 +836,37 @@ class VideoGeneratorApp:
                 for third in third_options:
                     span = third.x - first.x
                     if 10 <= span <= 36:
-                        candidates.append(ScreenPoint((first.x + third.x) // 2, int(round((first.y + second.y + third.y) / 3))))
-        if not candidates:
-            raise RuntimeError("Não consegui localizar os 3 pontinhos da resposta do ChatGPT na captura da janela.")
+                        candidate = ScreenPoint((first.x + third.x) // 2, int(round((first.y + second.y + third.y) / 3)))
+                        if not any(abs(candidate.x - existing.x) <= 3 and abs(candidate.y - existing.y) <= 3 for existing in candidates):
+                            candidates.append(candidate)
+        return candidates
 
+    def _select_response_more_candidate(self, image: Any, candidates: list[ScreenPoint]) -> ScreenPoint:
+        width = self._image_array(image).shape[1]
         left_side = [point for point in candidates if point.x < int(width * 0.55)]
         usable = left_side or candidates
         return max(usable, key=lambda point: (point.y, -abs(point.x - width // 3)))
+
+    def _best_changed_more_candidate(self, before_image: Any, after_image: Any, candidates: list[ScreenPoint]) -> ScreenPoint | None:
+        before = self._image_array(before_image)
+        after = self._image_array(after_image)
+        min_height = min(before.shape[0], after.shape[0])
+        min_width = min(before.shape[1], after.shape[1])
+        diff = np.abs(after[:min_height, :min_width] - before[:min_height, :min_width]).max(axis=2)
+        scored_candidates: list[tuple[int, ScreenPoint]] = []
+        for point in candidates:
+            left = max(point.x - 60, 0)
+            right = min(point.x + 60, min_width)
+            top = max(point.y - 50, 0)
+            bottom = min(point.y + 35, min_height)
+            if right <= left or bottom <= top:
+                continue
+            score = int((diff[top:bottom, left:right] > 28).sum())
+            if score >= 80:
+                scored_candidates.append((score, point))
+        if not scored_candidates:
+            return None
+        return max(scored_candidates, key=lambda item: (item[0], item[1].y))[1]
 
     def _find_read_aloud_point(self, before_image: Any, after_image: Any, clicked_menu_point: ScreenPoint, after_capture: WindowCapture) -> ScreenPoint:
         before = self._image_array(before_image)
@@ -1108,9 +1158,9 @@ class VideoGeneratorApp:
         base_filter = f"scale={VIDEO_SIZE}:force_original_aspect_ratio=increase,crop={VIDEO_SIZE},format=yuv420p"
         if self.subtitle_enabled.get() != "Sim":
             return base_filter
-        text = self._escape_drawtext(subtitle_text)
         font = self._escape_drawtext(self.subtitle_font.get().strip() or "Arial")
         font_size = self._safe_int(self.subtitle_size.get(), 64, 1, 160)
+        text = self._escape_drawtext(self._wrap_subtitle_text(subtitle_text, font_size))
         font_color = self._ffmpeg_color(self.subtitle_color.get(), "0xFFFFFF")
         y_expr = self._subtitle_y_expression()
         box_enabled = "1" if self.subtitle_background.get() == "Sim" else "0"
@@ -1128,7 +1178,8 @@ class VideoGeneratorApp:
             "borderw=3:"
             f"bordercolor={outline_color}:"
             "line_spacing=12:"
-            "x=(w-text_w)/2:"
+            "fix_bounds=1:"
+            "x=max(20\\,(w-text_w)/2):"
             f"y={y_expr}"
         )
         return f"{base_filter},{drawtext}"
@@ -1136,14 +1187,33 @@ class VideoGeneratorApp:
     def _subtitle_y_expression(self) -> str:
         position = self.subtitle_position.get()
         if position == "Topo":
-            return "h*0.12"
+            return "max(20\\,h*0.12)"
         if position == "Centro":
-            return "(h-text_h)/2"
-        return "h-text_h-h*0.14"
+            return "max(20\\,(h-text_h)/2)"
+        return "max(20\\,h-text_h-h*0.14)"
+
+    @staticmethod
+    def _wrap_subtitle_text(value: str, font_size: int) -> str:
+        words = value.split()
+        if not words:
+            return value
+        max_chars = max(14, min(34, int(1080 / max(font_size * 0.62, 1))))
+        lines: list[str] = []
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            if current and len(candidate) > max_chars:
+                lines.append(current)
+                current = word
+            else:
+                current = candidate
+        if current:
+            lines.append(current)
+        return "\n".join(lines)
 
     @staticmethod
     def _escape_drawtext(value: str) -> str:
-        return value.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
+        return value.replace("\\", "\\\\").replace("\n", "\\n").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
 
     @staticmethod
     def _ffmpeg_color(value: str, fallback: str) -> str:
@@ -1187,7 +1257,35 @@ class VideoGeneratorApp:
         list_file = workdir / "clips.txt"
         list_file.write_text("".join(f"file '{clip.as_posix()}'\n" for clip in clips), encoding="utf-8")
         temp_output = workdir / "final_without_music.mp4"
-        cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(temp_output)]
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-fflags",
+            "+genpts",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(list_file),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-af",
+            "aresample=async=1:first_pts=0",
+            "-avoid_negative_ts",
+            "make_zero",
+            str(temp_output),
+        ]
         self._run_ffmpeg(cmd)
 
         music_file = Path(self.music_path.get()).expanduser()
