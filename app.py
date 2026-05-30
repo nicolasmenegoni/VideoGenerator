@@ -59,6 +59,8 @@ class VideoGeneratorApp:
         self.chatgpt_menu_wait = StringVar(value="1")
         self.chatgpt_menu_x = StringVar(value="0")
         self.chatgpt_menu_y = StringVar(value="0")
+        self.chatgpt_input_x = StringVar(value="0")
+        self.chatgpt_input_y = StringVar(value="0")
         self.chatgpt_send_x = StringVar(value="0")
         self.chatgpt_send_y = StringVar(value="0")
         self.chatgpt_read_x = StringVar(value="0")
@@ -296,8 +298,8 @@ class VideoGeneratorApp:
             return
 
         text = self.subtitle_preview_text.get().strip() or "Digite uma frase para testar."
-        size = self._safe_int(self.subtitle_size.get(), 30, 12, 96)
-        preview_size = max(10, int(size * 0.38))
+        size = self._safe_int(self.subtitle_size.get(), 30, 1, 160)
+        preview_size = max(1, int(size * 0.38))
         position = self.subtitle_position.get()
         y = {"Topo": 96, "Centro": 250, "Baixo": 405}.get(position, 405)
         color = self._normalize_color(self.subtitle_color.get(), "#FFFFFF")
@@ -305,9 +307,11 @@ class VideoGeneratorApp:
         outline_color = self._normalize_color(self.subtitle_outline_color.get(), "#000000")
         font = self.subtitle_font.get().strip() or "Arial"
 
+        box_padding = max(8, preview_size * 2)
         if self.subtitle_background.get() == "Sim":
-            canvas.create_rectangle(24, y - 46, 276, y + 46, fill=bg_color, outline="")
-        for dx, dy in [(-2, 0), (2, 0), (0, -2), (0, 2), (-2, -2), (2, -2), (-2, 2), (2, 2)]:
+            canvas.create_rectangle(24, y - box_padding, 276, y + box_padding, fill=bg_color, outline="")
+        outline_offset = max(1, min(2, preview_size // 8 or 1))
+        for dx, dy in [(-outline_offset, 0), (outline_offset, 0), (0, -outline_offset), (0, outline_offset), (-outline_offset, -outline_offset), (outline_offset, -outline_offset), (-outline_offset, outline_offset), (outline_offset, outline_offset)]:
             canvas.create_text(150 + dx, y + dy, text=text, fill=outline_color, font=(font, preview_size, "bold"), width=230, justify="center")
         canvas.create_text(150, y, text=text, fill=color, font=(font, preview_size, "bold"), width=230, justify="center")
 
@@ -331,7 +335,7 @@ class VideoGeneratorApp:
 
         instructions = (
             "Fluxo usado: abrir o ChatGPT pelo atalho, enviar 'Apenas repita isso: [frase]', "
-            "clicar no botão de enviar, aguardar resposta, clicar nos 3 pontinhos, esperar 1 segundo, clicar em 'Ler em voz alta' e gravar o áudio do sistema."
+            "clicar no campo de texto, digitar, clicar no botão de enviar, aguardar resposta, clicar nos 3 pontinhos, esperar 1 segundo, clicar em 'Ler em voz alta' e gravar o áudio do sistema."
         )
         Label(content, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
 
@@ -345,14 +349,14 @@ class VideoGeneratorApp:
         coords_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
         coords_card.pack(fill=X, pady=(0, 12))
         Label(coords_card, text="Coordenadas dos cliques", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
-        coords = Frame(coords_card, bg="#f8f9fd")
-        coords.pack(fill=X)
-        left = Frame(coords, bg="#f8f9fd")
-        left.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
-        right = Frame(coords, bg="#f8f9fd")
-        right.pack(side=LEFT, fill=BOTH, expand=True)
-        self._entry_row(left, "X dos 3 pontinhos", self.chatgpt_menu_x, "Clique no menu da resposta do ChatGPT.")
-        self._entry_row(right, "Y dos 3 pontinhos", self.chatgpt_menu_y, "Use a coordenada da tela em pixels.")
+        coords_input = Frame(coords_card, bg="#f8f9fd")
+        coords_input.pack(fill=X)
+        left_input = Frame(coords_input, bg="#f8f9fd")
+        left_input.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
+        right_input = Frame(coords_input, bg="#f8f9fd")
+        right_input.pack(side=LEFT, fill=BOTH, expand=True)
+        self._entry_row(left_input, "X do campo de texto", self.chatgpt_input_x, "Clique no lugar onde digita a mensagem do ChatGPT.")
+        self._entry_row(right_input, "Y do campo de texto", self.chatgpt_input_y, "Use a coordenada da tela em pixels.")
 
         coords_send = Frame(coords_card, bg="#f8f9fd")
         coords_send.pack(fill=X)
@@ -362,6 +366,15 @@ class VideoGeneratorApp:
         right_send.pack(side=LEFT, fill=BOTH, expand=True)
         self._entry_row(left_send, "X do botão Enviar", self.chatgpt_send_x, "Clique no botão de enviar mensagem do ChatGPT.")
         self._entry_row(right_send, "Y do botão Enviar", self.chatgpt_send_y, "Use a coordenada da tela em pixels.")
+
+        coords = Frame(coords_card, bg="#f8f9fd")
+        coords.pack(fill=X)
+        left = Frame(coords, bg="#f8f9fd")
+        left.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
+        right = Frame(coords, bg="#f8f9fd")
+        right.pack(side=LEFT, fill=BOTH, expand=True)
+        self._entry_row(left, "X dos 3 pontinhos", self.chatgpt_menu_x, "Clique no menu da resposta do ChatGPT.")
+        self._entry_row(right, "Y dos 3 pontinhos", self.chatgpt_menu_y, "Use a coordenada da tela em pixels.")
 
         coords_read = Frame(coords_card, bg="#f8f9fd")
         coords_read.pack(fill=X)
@@ -432,6 +445,8 @@ class VideoGeneratorApp:
                 self.chatgpt_menu_wait.set(data.get("chatgpt_menu_wait", self.chatgpt_menu_wait.get()))
                 self.chatgpt_menu_x.set(data.get("chatgpt_menu_x", self.chatgpt_menu_x.get()))
                 self.chatgpt_menu_y.set(data.get("chatgpt_menu_y", self.chatgpt_menu_y.get()))
+                self.chatgpt_input_x.set(data.get("chatgpt_input_x", self.chatgpt_input_x.get()))
+                self.chatgpt_input_y.set(data.get("chatgpt_input_y", self.chatgpt_input_y.get()))
                 self.chatgpt_send_x.set(data.get("chatgpt_send_x", self.chatgpt_send_x.get()))
                 self.chatgpt_send_y.set(data.get("chatgpt_send_y", self.chatgpt_send_y.get()))
                 self.chatgpt_read_x.set(data.get("chatgpt_read_x", self.chatgpt_read_x.get()))
@@ -462,6 +477,8 @@ class VideoGeneratorApp:
             "chatgpt_menu_wait": self.chatgpt_menu_wait.get().strip(),
             "chatgpt_menu_x": self.chatgpt_menu_x.get().strip(),
             "chatgpt_menu_y": self.chatgpt_menu_y.get().strip(),
+            "chatgpt_input_x": self.chatgpt_input_x.get().strip(),
+            "chatgpt_input_y": self.chatgpt_input_y.get().strip(),
             "chatgpt_send_x": self.chatgpt_send_x.get().strip(),
             "chatgpt_send_y": self.chatgpt_send_y.get().strip(),
             "chatgpt_read_x": self.chatgpt_read_x.get().strip(),
@@ -535,7 +552,7 @@ class VideoGeneratorApp:
             self._show_tab("apis")
             return
         if not self._chatgpt_coordinates_ready():
-            messagebox.showerror(APP_TITLE, "Configure as coordenadas do botão Enviar, dos 3 pontinhos e do Ler em voz alta na aba Audio.")
+            messagebox.showerror(APP_TITLE, "Configure as coordenadas do campo de texto, botão Enviar, 3 pontinhos e Ler em voz alta na aba Audio.")
             self._show_tab("audio")
             return
         out_dir = Path(self.output_dir.get()).expanduser()
@@ -602,6 +619,10 @@ class VideoGeneratorApp:
 
         pyautogui.hotkey(*shortcut_keys)
         time.sleep(self._safe_float(self.chatgpt_send_wait.get(), 1.0, 0.2, 10.0))
+        input_x = self._safe_int(self.chatgpt_input_x.get(), 0, 0, 10000)
+        input_y = self._safe_int(self.chatgpt_input_y.get(), 0, 0, 10000)
+        pyautogui.click(input_x, input_y)
+        time.sleep(0.2)
         pyperclip.copy(prompt)
         pyautogui.hotkey("ctrl", "a")
         pyautogui.hotkey("ctrl", "v")
@@ -682,6 +703,8 @@ class VideoGeneratorApp:
 
     def _chatgpt_coordinates_ready(self) -> bool:
         values = [
+            self.chatgpt_input_x.get(),
+            self.chatgpt_input_y.get(),
             self.chatgpt_send_x.get(),
             self.chatgpt_send_y.get(),
             self.chatgpt_menu_x.get(),
@@ -823,7 +846,7 @@ class VideoGeneratorApp:
             return base_filter
         text = self._escape_drawtext(subtitle_text)
         font = self._escape_drawtext(self.subtitle_font.get().strip() or "Arial")
-        font_size = self._safe_int(self.subtitle_size.get(), 64, 12, 160)
+        font_size = self._safe_int(self.subtitle_size.get(), 64, 1, 160)
         font_color = self._ffmpeg_color(self.subtitle_color.get(), "0xFFFFFF")
         y_expr = self._subtitle_y_expression()
         box_enabled = "1" if self.subtitle_background.get() == "Sim" else "0"
