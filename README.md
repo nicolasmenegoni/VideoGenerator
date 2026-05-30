@@ -36,7 +36,7 @@ O executável será criado em `dist/VideoGenerator.exe`.
 5. Na aba **Video**, clique em **Link Pexels** ao lado de cada frase para colar uma URL manual, ou deixe vazio para busca automática.
 6. Na aba **Video**, escolha a pasta de saída.
 7. Na aba **Legendas**, configure posição, cor, tamanho, fundo, cor do contorno e fonte. Digite uma frase de teste para ver o preview atualizar em tempo real, ou use **Legendas Desligadas** para renderizar sem legendas.
-8. Na aba **Audio**, configure a automação do app do ChatGPT: atalho para abrir o app, tempo antes da primeira captura, tempo de espera da resposta, espera depois do menu e tempo extra/máximo de gravação. Não é necessário configurar coordenadas: o app captura a janela do ChatGPT e identifica automaticamente o campo de texto, o botão **Enviar**, os **3 pontinhos** da resposta e a opção **Ler em voz alta**. A gravação tenta parar automaticamente ao detectar silêncio depois da fala.
+8. Na aba **Audio**, configure a automação do app do ChatGPT: atalho para abrir o app, tempo antes da primeira captura, tempo de espera da resposta, espera depois do menu e tempo extra/máximo de gravação. Não é necessário configurar coordenadas: o app captura a janela do ChatGPT e identifica automaticamente o campo de texto, o botão **Enviar**, os **3 pontinhos** da resposta e a opção **Ler em voz alta**. No Windows, durante a gravação o app silencia temporariamente outras sessões de áudio para capturar só a voz do ChatGPT; depois restaura os volumes. A gravação tenta parar automaticamente ao detectar silêncio depois da fala.
 9. Na aba **Musica**, selecione uma música do PC e ajuste o volume da trilha; o padrão é **20%**.
 10. Use o botão fixo **Gerar vídeo**, que fica sempre visível na parte inferior do app.
 
