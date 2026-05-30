@@ -892,6 +892,194 @@ class VideoGeneratorApp:
         normalized = process_name.lower()
         return "chatgpt" in normalized or "openai" in normalized
 
+    def _capture_chatgpt_window(self) -> WindowCapture:
+        window = None
+        try:
+            if hasattr(pyautogui, "getActiveWindow"):
+                window = pyautogui.getActiveWindow()
+        except Exception:
+            window = None
+
+        if window and getattr(window, "width", 0) > 200 and getattr(window, "height", 0) > 200:
+            left = max(int(window.left), 0)
+            top = max(int(window.top), 0)
+            width = int(window.width)
+            height = int(window.height)
+            return WindowCapture(pyautogui.screenshot(region=(left, top, width, height)), left, top)
+
+        return WindowCapture(pyautogui.screenshot(), 0, 0)
+
+    @staticmethod
+    def _to_screen(capture: WindowCapture, point: ScreenPoint) -> ScreenPoint:
+        return ScreenPoint(capture.offset_x + point.x, capture.offset_y + point.y)
+
+    @staticmethod
+    def _image_array(image: Any) -> np.ndarray:
+        if hasattr(image, "convert"):
+            image = image.convert("RGB")
+        array = np.asarray(image)
+        if array.ndim == 2:
+            array = np.repeat(array[:, :, None], 3, axis=2)
+        if array.shape[2] > 3:
+            array = array[:, :, :3]
+        return array.astype(np.int16)
+
+    def _find_chatgpt_composer(self, image: Any) -> ScreenBounds:
+        array = self._image_array(image)
+        height, width, _ = array.shape
+        channels_spread = array.max(axis=2) - array.min(axis=2)
+        gray_mask = (
+            (array[:, :, 0] >= 16)
+            & (array[:, :, 0] <= 82)
+            & (array[:, :, 1] >= 16)
+            & (array[:, :, 1] <= 82)
+            & (array[:, :, 2] >= 16)
+            & (array[:, :, 2] <= 82)
+            & (channels_spread <= 18)
+        )
+        gray_mask[: int(height * 0.45), :] = False
+
+        row_counts = gray_mask.sum(axis=1)
+        row_threshold = max(80, int(width * 0.25))
+        segments: list[tuple[int, int]] = []
+        segment_start: int | None = None
+        for row, count in enumerate(row_counts):
+            if count >= row_threshold and segment_start is None:
+                segment_start = row
+            elif count < row_threshold and segment_start is not None:
+                if row - segment_start >= 35:
+                    segments.append((segment_start, row))
+                segment_start = None
+        if segment_start is not None and height - segment_start >= 35:
+            segments.append((segment_start, height))
+        if not segments:
+            return self._fallback_chatgpt_composer(width, height)
+
+        top, bottom = max(segments, key=lambda item: item[1])
+        band = gray_mask[top:bottom, :]
+        col_counts = band.sum(axis=0)
+        col_threshold = max(20, int((bottom - top) * 0.25))
+        cols = np.where(col_counts >= col_threshold)[0]
+        if cols.size == 0:
+            return self._fallback_chatgpt_composer(width, height)
+        left = max(int(cols[0]), int(width * 0.02))
+        right = min(int(cols[-1]) + 1, int(width * 0.98))
+        if bottom - top < 35 or right - left < max(120, int(width * 0.25)):
+            return self._fallback_chatgpt_composer(width, height)
+        return ScreenBounds(left, int(top), right, int(bottom))
+
+    @staticmethod
+    def _fallback_chatgpt_composer(width: int, height: int) -> ScreenBounds:
+        return ScreenBounds(
+            max(12, int(width * 0.035)),
+            max(0, height - max(120, int(height * 0.16))),
+            min(width - 12, int(width * 0.965)),
+            max(1, height - max(24, int(height * 0.04))),
+        )
+
+    @staticmethod
+    def _composer_input_point(composer: ScreenBounds) -> ScreenPoint:
+        return ScreenPoint(composer.left + min(max(composer.width // 4, 80), 180), composer.top + composer.height // 2)
+
+    def _find_chatgpt_send_button(self, image: Any, composer: ScreenBounds) -> ScreenPoint:
+        array = self._image_array(image)
+        search_left = composer.left + int(composer.width * 0.68)
+        search = array[composer.top : composer.bottom, search_left : composer.right]
+        white_mask = (search[:, :, 0] >= 225) & (search[:, :, 1] >= 225) & (search[:, :, 2] >= 225)
+        ys, xs = np.where(white_mask)
+        if ys.size:
+            components = self._components(white_mask, min_area=60)
+            if components:
+                best = max(components, key=lambda bounds: bounds.width * bounds.height)
+                return ScreenPoint(search_left + best.center.x, composer.top + best.center.y)
+            return ScreenPoint(search_left + int(np.median(xs)), composer.top + int(np.median(ys)))
+        return ScreenPoint(composer.right - 36, composer.top + composer.height // 2)
+
+    def _find_response_more_button(self, image: Any) -> ScreenPoint:
+        array = self._image_array(image)
+        height, width, _ = array.shape
+        bright_mask = (array[:, :, 0] >= 215) & (array[:, :, 1] >= 215) & (array[:, :, 2] >= 215)
+        bright_mask[: int(height * 0.14), :] = False
+        try:
+            composer = self._find_chatgpt_composer(image)
+            bright_mask[max(composer.top - 20, 0) :, :] = False
+        except RuntimeError:
+            bright_mask[int(height * 0.82) :, :] = False
+
+        tiny = [component for component in self._components(bright_mask, min_area=2) if 1 <= component.width <= 8 and 1 <= component.height <= 8]
+        centers = [component.center for component in tiny]
+        candidates: list[ScreenPoint] = []
+        for first in centers:
+            neighbors = [point for point in centers if abs(point.y - first.y) <= 4 and 4 <= point.x - first.x <= 28]
+            for second in neighbors:
+                third_options = [point for point in centers if abs(point.y - first.y) <= 4 and 4 <= point.x - second.x <= 28]
+                for third in third_options:
+                    span = third.x - first.x
+                    if 10 <= span <= 36:
+                        candidates.append(ScreenPoint((first.x + third.x) // 2, int(round((first.y + second.y + third.y) / 3))))
+        if not candidates:
+            raise RuntimeError("Não consegui localizar os 3 pontinhos da resposta do ChatGPT na captura da janela.")
+
+        left_side = [point for point in candidates if point.x < int(width * 0.55)]
+        usable = left_side or candidates
+        return max(usable, key=lambda point: (point.y, -abs(point.x - width // 3)))
+
+    def _find_read_aloud_point(self, before_image: Any, after_image: Any, clicked_menu_point: ScreenPoint, after_capture: WindowCapture) -> ScreenPoint:
+        before = self._image_array(before_image)
+        after = self._image_array(after_image)
+        min_height = min(before.shape[0], after.shape[0])
+        min_width = min(before.shape[1], after.shape[1])
+        diff = np.abs(after[:min_height, :min_width] - before[:min_height, :min_width]).max(axis=2)
+        changed_mask = diff > 25
+        components = [component for component in self._components(changed_mask, min_area=120) if component.width > 30 and component.height > 12]
+
+        local_click = ScreenPoint(clicked_menu_point.x - after_capture.offset_x, clicked_menu_point.y - after_capture.offset_y)
+        if components:
+            nearby = [
+                component
+                for component in components
+                if abs(component.center.x - local_click.x) <= 320 and abs(component.center.y - local_click.y) <= 320
+            ]
+            component = max(nearby or components, key=lambda bounds: bounds.width * bounds.height)
+            read_x = component.left + min(max(int(component.width * 0.28), 70), component.width - 12)
+            read_y = component.bottom - min(max(component.height // 7, 24), 36)
+            return ScreenPoint(read_x, read_y)
+
+        return ScreenPoint(local_click.x + 90, max(local_click.y - 55, 0))
+
+    @staticmethod
+    def _components(mask: np.ndarray, min_area: int = 1) -> list[ScreenBounds]:
+        height, width = mask.shape
+        visited = np.zeros(mask.shape, dtype=bool)
+        components: list[ScreenBounds] = []
+        for y in range(height):
+            xs = np.where(mask[y] & ~visited[y])[0]
+            for x_start in xs:
+                if visited[y, x_start] or not mask[y, x_start]:
+                    continue
+                stack = [(int(x_start), y)]
+                visited[y, x_start] = True
+                min_x = max_x = int(x_start)
+                min_y = max_y = y
+                area = 0
+                while stack:
+                    x, current_y = stack.pop()
+                    area += 1
+                    min_x = min(min_x, x)
+                    max_x = max(max_x, x)
+                    min_y = min(min_y, current_y)
+                    max_y = max(max_y, current_y)
+                    for nx in (x - 1, x, x + 1):
+                        for ny in (current_y - 1, current_y, current_y + 1):
+                            if nx == x and ny == current_y:
+                                continue
+                            if 0 <= nx < width and 0 <= ny < height and not visited[ny, nx] and mask[ny, nx]:
+                                visited[ny, nx] = True
+                                stack.append((nx, ny))
+                if area >= min_area:
+                    components.append(ScreenBounds(min_x, min_y, max_x + 1, max_y + 1))
+        return components
+
     def _record_system_audio(self, output_path: Path, duration: float) -> None:
         sample_rate = 48000
         chunk_seconds = 0.25
