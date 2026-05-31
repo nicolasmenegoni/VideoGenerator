@@ -395,7 +395,7 @@ class VideoGeneratorApp:
         instructions = (
             "Fluxo usado: abrir o ChatGPT pelo atalho, capturar a janela, localizar automaticamente o campo de texto "
             "e o botão Enviar pela imagem, enviar 'Apenas repita isso com aspas: [frase]', esperar a resposta pelo tempo configurado, "
-            "procurar os 3 pontinhos novos da última resposta (horizontal ou vertical), abrir o menu, "
+            "aguardar todo esse tempo e só então procurar os 3 pontinhos novos da última resposta (horizontal ou vertical), abrir o menu, "
             "identificar a área nova e clicar em 'Ler em voz alta'."
         )
         Label(content, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
@@ -947,21 +947,20 @@ class VideoGeneratorApp:
 
     def _wait_for_response_more_button(self, before_capture: WindowCapture, timeout: float) -> tuple[WindowCapture, ScreenPoint]:
         before_candidates = self._response_more_candidates(before_capture.image)
-        deadline = time.monotonic() + max(timeout, 1.0)
-        capture = before_capture
-        after_candidates: list[ScreenPoint] = []
-        best_candidate: ScreenPoint | None = None
+        time.sleep(max(timeout, 1.0))
 
-        while time.monotonic() < deadline:
-            time.sleep(0.5)
-            capture = self._capture_chatgpt_window()
-            after_candidates = self._response_more_candidates(capture.image)
-            best_candidate = self._best_new_more_candidate(before_candidates, after_candidates)
-            if best_candidate is not None:
-                return capture, best_candidate
+        capture = self._capture_chatgpt_window()
+        after_candidates = self._response_more_candidates(capture.image)
+        best_candidate = (
+            self._best_new_more_candidate(before_candidates, after_candidates)
+            or self._best_changed_more_candidate(before_capture.image, capture.image, after_candidates)
+        )
+        if best_candidate is not None:
+            return capture, best_candidate
 
         settle_deadline = time.monotonic() + 3.0
         while time.monotonic() < settle_deadline:
+            time.sleep(0.35)
             capture = self._capture_chatgpt_window()
             after_candidates = self._response_more_candidates(capture.image)
             best_candidate = (
@@ -970,7 +969,6 @@ class VideoGeneratorApp:
             )
             if best_candidate is not None:
                 return capture, best_candidate
-            time.sleep(0.35)
 
         if after_candidates:
             return capture, self._select_response_more_candidate(capture.image, after_candidates)
