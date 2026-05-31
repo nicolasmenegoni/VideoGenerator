@@ -1389,10 +1389,17 @@ class VideoGeneratorApp:
         raise RuntimeError(f"Nenhuma mídia encontrada no Pexels para: {query}")
 
     def _create_clip(self, ffmpeg: str, media_path: Path, audio_path: Path, clip_path: Path, subtitle_text: str) -> None:
-        duration = self._audio_duration(audio_path)
-        video_filter = self._video_filter(subtitle_text)
+        audio_duration = self._audio_duration(audio_path)
         image_exts = {".jpg", ".jpeg", ".png", ".webp"}
-        if media_path.suffix.lower() in image_exts:
+        is_image = media_path.suffix.lower() in image_exts
+        media_duration = 0.0 if is_image else self._media_duration(ffmpeg, media_path)
+        duration = max(audio_duration, media_duration) if media_duration > 0 else audio_duration
+        video_filter = self._video_filter(subtitle_text)
+        filter_complex = (
+            f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[v];"
+            f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
+        )
+        if is_image:
             cmd = [
                 ffmpeg,
                 "-y",
@@ -1404,48 +1411,47 @@ class VideoGeneratorApp:
                 str(media_path),
                 "-i",
                 str(audio_path),
-                "-vf",
-                video_filter,
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[v]",
+                "-map",
+                "[a]",
                 "-r",
                 FPS,
                 "-c:v",
                 "libx264",
                 "-c:a",
                 "aac",
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0",
-                "-shortest",
                 str(clip_path),
             ]
         else:
-            cmd = [
-                ffmpeg,
-                "-y",
-                "-stream_loop",
-                "-1",
-                "-i",
-                str(media_path),
-                "-i",
-                str(audio_path),
-                "-t",
-                f"{duration:.3f}",
-                "-vf",
-                video_filter,
-                "-r",
-                FPS,
-                "-c:v",
-                "libx264",
-                "-c:a",
-                "aac",
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0",
-                "-shortest",
-                str(clip_path),
-            ]
+            cmd = [ffmpeg, "-y"]
+            if media_duration <= 0 or media_duration < duration - 0.05:
+                cmd.extend(["-stream_loop", "-1"])
+            cmd.extend(
+                [
+                    "-i",
+                    str(media_path),
+                    "-i",
+                    str(audio_path),
+                    "-t",
+                    f"{duration:.3f}",
+                    "-filter_complex",
+                    filter_complex,
+                    "-map",
+                    "[v]",
+                    "-map",
+                    "[a]",
+                    "-r",
+                    FPS,
+                    "-c:v",
+                    "libx264",
+                    "-c:a",
+                    "aac",
+                    str(clip_path),
+                ]
+            )
         self._run_ffmpeg(cmd)
 
     def _video_filter(self, subtitle_text: str) -> str:
@@ -1623,6 +1629,15 @@ class VideoGeneratorApp:
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if result.returncode != 0:
             raise RuntimeError(result.stderr[-2000:] or "FFmpeg falhou sem mensagem de erro.")
+
+    def _media_duration(self, ffmpeg: str, media_path: Path) -> float:
+        result = subprocess.run([ffmpeg, "-hide_banner", "-i", str(media_path)], capture_output=True, text=True, check=False)
+        output = result.stderr + "\n" + result.stdout
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", output)
+        if not match:
+            return 0.0
+        hours, minutes, seconds = match.groups()
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
     @staticmethod
     def _audio_duration(audio_path: Path) -> float:
