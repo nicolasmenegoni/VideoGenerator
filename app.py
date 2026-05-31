@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import importlib
 import queue
@@ -112,6 +113,9 @@ class VideoGeneratorApp:
         self.chatgpt_window_ready = False
         self.chatgpt_audio_process_names = {"chatgpt", "openai", "msedgewebview2", "applicationframehost"}
         self.media_preview_images: dict[str, ImageTk.PhotoImage] = {}
+        self.media_preview_bytes: dict[str, bytes] = {}
+        self.media_preview_loading: set[str] = set()
+        self.media_preview_failed: set[str] = set()
         self.lines: list[ScriptLine] = []
         self.message_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.tabs: dict[str, Frame] = {}
@@ -544,36 +548,68 @@ class VideoGeneratorApp:
     def _media_preview_widget(self, parent: Frame, media_url: str) -> Frame:
         preview = Frame(parent, bg="#eef1f8", width=92, height=116, padx=4, pady=4)
         preview.pack_propagate(False)
-        if not media_url.strip():
+        clean_url = media_url.strip()
+        if not clean_url:
             Label(preview, text="Preview\nPexels", bg="#eef1f8", fg="#8b95a7", justify="center", font=("Segoe UI", 8, "bold")).pack(fill=BOTH, expand=True)
             return preview
 
-        image = self._load_media_preview(media_url.strip())
+        image = self._load_media_preview(clean_url)
         if image:
             Label(preview, image=image, bg="#eef1f8").pack(fill=BOTH, expand=True)
-        else:
+        elif clean_url in self.media_preview_failed:
             Label(preview, text="Sem\npreview", bg="#eef1f8", fg="#8b95a7", justify="center", font=("Segoe UI", 8, "bold")).pack(fill=BOTH, expand=True)
+        else:
+            Label(preview, text="Carregando\npreview", bg="#eef1f8", fg="#8b95a7", justify="center", font=("Segoe UI", 8, "bold")).pack(fill=BOTH, expand=True)
+            self._start_media_preview_load(clean_url)
         return preview
 
     def _load_media_preview(self, media_url: str) -> ImageTk.PhotoImage | None:
         if media_url in self.media_preview_images:
             return self.media_preview_images[media_url]
-
-        preview_url = self._media_preview_url(media_url)
-        if not preview_url:
+        image_bytes = self.media_preview_bytes.get(media_url)
+        if not image_bytes:
             return None
         try:
-            response = requests.get(preview_url, timeout=8)
-            response.raise_for_status()
-            image = Image.open(BytesIO(response.content)).convert("RGB")
+            image = Image.open(BytesIO(image_bytes)).convert("RGB")
             image.thumbnail((84, 108))
             photo = ImageTk.PhotoImage(image)
             self.media_preview_images[media_url] = photo
             return photo
         except Exception:
+            self.media_preview_failed.add(media_url)
             return None
 
-    def _media_preview_url(self, media_url: str) -> str:
+    def _start_media_preview_load(self, media_url: str) -> None:
+        if media_url in self.media_preview_loading or media_url in self.media_preview_failed:
+            return
+        self.media_preview_loading.add(media_url)
+        api_key = self.pexels_key.get().strip()
+
+        def worker() -> None:
+            image_bytes: bytes | None = None
+            try:
+                preview_url = self._media_preview_url(media_url, api_key)
+                if preview_url:
+                    response = requests.get(preview_url, timeout=8)
+                    response.raise_for_status()
+                    image_bytes = response.content
+            except Exception:
+                image_bytes = None
+
+            def finish() -> None:
+                self.media_preview_loading.discard(media_url)
+                if image_bytes:
+                    self.media_preview_bytes[media_url] = image_bytes
+                    self.media_preview_failed.discard(media_url)
+                else:
+                    self.media_preview_failed.add(media_url)
+                self._render_lines()
+
+            self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _media_preview_url(self, media_url: str, api_key: str | None = None) -> str:
         parsed = urllib.parse.urlparse(media_url)
         suffix = Path(parsed.path).suffix.lower()
         if suffix in {".jpg", ".jpeg", ".png", ".webp"}:
@@ -582,22 +618,40 @@ class VideoGeneratorApp:
             return ""
 
         match = re.search(r"(\d+)(?:/)?$", parsed.path)
-        if not match or not self.pexels_key.get().strip():
-            return ""
-
-        media_id = match.group(1)
-        headers = {"Authorization": self.pexels_key.get().strip()}
-        try:
-            if "/video" in parsed.path:
-                response = requests.get(f"https://api.pexels.com/videos/videos/{media_id}", headers=headers, timeout=8)
+        clean_api_key = api_key if api_key is not None else self.pexels_key.get().strip()
+        if match and clean_api_key:
+            media_id = match.group(1)
+            headers = {"Authorization": clean_api_key}
+            try:
+                if "/video" in parsed.path:
+                    response = requests.get(f"https://api.pexels.com/videos/videos/{media_id}", headers=headers, timeout=8)
+                    response.raise_for_status()
+                    return response.json().get("image", "") or self._pexels_page_preview_url(media_url)
+                response = requests.get(f"https://api.pexels.com/v1/photos/{media_id}", headers=headers, timeout=8)
                 response.raise_for_status()
-                return response.json().get("image", "")
-            response = requests.get(f"https://api.pexels.com/v1/photos/{media_id}", headers=headers, timeout=8)
+                src = response.json().get("src", {})
+                return src.get("medium") or src.get("large") or src.get("large2x") or self._pexels_page_preview_url(media_url)
+            except Exception:
+                return self._pexels_page_preview_url(media_url)
+        return self._pexels_page_preview_url(media_url)
+
+    @staticmethod
+    def _pexels_page_preview_url(media_url: str) -> str:
+        try:
+            response = requests.get(media_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
             response.raise_for_status()
-            src = response.json().get("src", {})
-            return src.get("medium") or src.get("large") or src.get("large2x") or ""
         except Exception:
             return ""
+
+        for meta_tag in re.findall(r"<meta[^>]+>", response.text, flags=re.IGNORECASE):
+            if not re.search(r"(?:og:image|twitter:image)", meta_tag, flags=re.IGNORECASE):
+                continue
+            content_match = re.search(r'''content=["']([^"']+)["']''', meta_tag, flags=re.IGNORECASE)
+            if not content_match:
+                content_match = re.search(r'''content=([^\s>]+)''', meta_tag, flags=re.IGNORECASE)
+            if content_match:
+                return html.unescape(content_match.group(1))
+        return ""
 
     def _paste_line_link(self, index: int) -> None:
         link = pyperclip.paste().strip()
@@ -1202,6 +1256,10 @@ class VideoGeneratorApp:
                 "libx264",
                 "-c:a",
                 "aac",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
                 "-shortest",
                 str(clip_path),
             ]
@@ -1334,39 +1392,44 @@ class VideoGeneratorApp:
         return name or "video_gerado"
 
     def _concat_clips(self, ffmpeg: str, clips: list[Path], final_path: Path, workdir: Path) -> None:
-        list_file = workdir / "clips.txt"
-        list_file.write_text("".join(f"file '{clip.as_posix()}'\n" for clip in clips), encoding="utf-8")
         temp_output = workdir / "final_without_music.mp4"
-        cmd = [
-            ffmpeg,
-            "-y",
-            "-fflags",
-            "+genpts",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(list_file),
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a:0",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-af",
-            "aresample=async=1:first_pts=0",
-            "-avoid_negative_ts",
-            "make_zero",
-            str(temp_output),
-        ]
-        self._run_ffmpeg(cmd)
+        if len(clips) == 1:
+            shutil.copy2(clips[0], temp_output)
+        else:
+            cmd = [ffmpeg, "-y"]
+            for clip in clips:
+                cmd.extend(["-i", str(clip)])
+
+            filter_parts: list[str] = []
+            concat_inputs = ""
+            for index in range(len(clips)):
+                filter_parts.append(f"[{index}:v:0]setpts=PTS-STARTPTS[v{index}]")
+                filter_parts.append(f"[{index}:a:0]asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0[a{index}]")
+                concat_inputs += f"[v{index}][a{index}]"
+            filter_complex = ";".join(filter_parts) + f";{concat_inputs}concat=n={len(clips)}:v=1:a=1[v][a]"
+
+            cmd.extend(
+                [
+                    "-filter_complex",
+                    filter_complex,
+                    "-map",
+                    "[v]",
+                    "-map",
+                    "[a]",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    "-movflags",
+                    "+faststart",
+                    str(temp_output),
+                ]
+            )
+            self._run_ffmpeg(cmd)
 
         music_file = Path(self.music_path.get()).expanduser()
         if not self.music_path.get().strip() or not music_file.exists():
