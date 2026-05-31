@@ -87,6 +87,7 @@ class VideoGeneratorApp:
         self.groq_key = StringVar()
         self.video_title = StringVar(value="video_gerado")
         self.output_dir = StringVar(value=str(Path.home() / "Videos"))
+        self.video_extra_after_audio = StringVar(value="1")
         self.subtitle_enabled = StringVar(value="Sim")
         self.subtitle_position = StringVar(value="Baixo")
         self.subtitle_color = StringVar(value="#FFFFFF")
@@ -377,6 +378,8 @@ class VideoGeneratorApp:
         Button(actions, text="Escolher pasta de saída", command=self._choose_output_dir, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
         Label(actions, textvariable=self.output_dir, bg="#ffffff", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT, padx=(12, 0))
 
+        self._entry_row(parent, "Tempo extra após o áudio quando o vídeo for maior (segundos)", self.video_extra_after_audio, "Padrão: 1. Use 0 para cortar exatamente no fim do áudio.")
+
         list_card = Frame(parent, bg="#f3f5fb", padx=10, pady=10)
         list_card.pack(fill=BOTH, expand=True)
         self.lines_canvas = Canvas(list_card, bd=0, highlightthickness=0, bg="#f3f5fb")
@@ -586,6 +589,7 @@ class VideoGeneratorApp:
                 self.script_text_value = data.get("script_text", self.script_text_value)
                 self.lines = self._config_lines(data.get("script_lines", []))
                 self.output_dir.set(data.get("output_dir", self.output_dir.get()))
+                self.video_extra_after_audio.set(data.get("video_extra_after_audio", self.video_extra_after_audio.get()))
                 self.subtitle_enabled.set(data.get("subtitle_enabled", self.subtitle_enabled.get()))
                 self.subtitle_position.set(data.get("subtitle_position", self.subtitle_position.get()))
                 self.subtitle_color.set(data.get("subtitle_color", self.subtitle_color.get()))
@@ -622,6 +626,7 @@ class VideoGeneratorApp:
             "script_text": self.script_text_value,
             "script_lines": self._config_script_lines(),
             "output_dir": self.output_dir.get().strip(),
+            "video_extra_after_audio": self.video_extra_after_audio.get().strip(),
             "subtitle_enabled": self.subtitle_enabled.get().strip(),
             "subtitle_position": self.subtitle_position.get().strip(),
             "subtitle_color": self.subtitle_color.get().strip(),
@@ -1629,7 +1634,13 @@ class VideoGeneratorApp:
         image_exts = {".jpg", ".jpeg", ".png", ".webp"}
         is_image = media_path.suffix.lower() in image_exts
         media_duration = 0.0 if is_image else self._media_duration(ffmpeg, media_path)
-        duration = max(audio_duration, media_duration) if media_duration > 0 else audio_duration
+        extra_after_audio = self._safe_float(self.video_extra_after_audio.get(), 1.0, 0.0, 60.0)
+        if media_duration > audio_duration:
+            duration = min(media_duration, audio_duration + extra_after_audio)
+        elif media_duration > 0:
+            duration = audio_duration
+        else:
+            duration = audio_duration
         video_filter = self._video_filter(subtitle_text, clip_path.with_suffix(".subtitle.txt"))
         filter_complex = (
             f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[v];"
@@ -1739,13 +1750,13 @@ class VideoGeneratorApp:
         for font_size in range(requested_size, 23, -2):
             wrapped = self._wrap_subtitle_text(value, font_size)
             line_count = max(1, wrapped.count("\n") + 1)
-            line_spacing = max(6, int(font_size * 0.18))
+            line_spacing = max(2, int(font_size * 0.06))
             box_border = max(10, min(24, int(font_size * 0.34)))
             estimated_height = line_count * font_size + max(0, line_count - 1) * line_spacing + box_border * 2 + 8
             if estimated_height <= max_text_height:
                 return wrapped, font_size, line_spacing, box_border
         font_size = 24
-        return self._wrap_subtitle_text(value, font_size), font_size, 6, 10
+        return self._wrap_subtitle_text(value, font_size), font_size, 2, 10
 
     @staticmethod
     def _wrap_subtitle_text(value: str, font_size: int) -> str:
