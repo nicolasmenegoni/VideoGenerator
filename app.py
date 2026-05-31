@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import ctypes
 import html
 import json
-import importlib
 import queue
 import time
 import re
@@ -34,6 +32,8 @@ APP_TITLE = "VideoGenerator"
 CONFIG_FILE = Path.home() / ".videogenerator_config.json"
 VIDEO_SIZE = "1080:1920"
 FPS = "30"
+GROQ_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_SCRIPT_TEXT = "Hoje vamos falar sobre a China.\nEsse país é incrível.\nVamos te provar."
 
 
 @dataclass
@@ -84,8 +84,10 @@ class VideoGeneratorApp:
         self.root.configure(bg="#f6f7fb")
 
         self.pexels_key = StringVar()
+        self.groq_key = StringVar()
         self.video_title = StringVar(value="video_gerado")
         self.output_dir = StringVar(value=str(Path.home() / "Videos"))
+        self.video_extra_after_audio = StringVar(value="1")
         self.subtitle_enabled = StringVar(value="Sim")
         self.subtitle_position = StringVar(value="Baixo")
         self.subtitle_color = StringVar(value="#FFFFFF")
@@ -93,7 +95,7 @@ class VideoGeneratorApp:
         self.subtitle_background = StringVar(value="Sim")
         self.subtitle_background_color = StringVar(value="#000000")
         self.subtitle_outline_color = StringVar(value="#000000")
-        self.subtitle_font = StringVar(value="Arial")
+        self.subtitle_font = StringVar(value="Arial Black")
         self.subtitle_preview_text = StringVar(value="Hoje vamos falar sobre a China.")
         self.chatgpt_shortcut = StringVar(value="alt+c")
         self.chatgpt_response_wait = StringVar(value="8")
@@ -113,23 +115,13 @@ class VideoGeneratorApp:
         self.status_text = StringVar(value="Pronto.")
         self.progress_text = StringVar(value="")
         self.chatgpt_window_ready = False
-        self.chatgpt_audio_process_names = {
-            "chatgpt",
-            "openai",
-            "msedgewebview2",
-            "applicationframehost",
-            "chrome",
-            "msedge",
-            "firefox",
-            "brave",
-            "opera",
-            "vivaldi",
-        }
         self.media_preview_images: dict[str, ImageTk.PhotoImage] = {}
         self.media_preview_bytes: dict[str, bytes] = {}
         self.media_preview_loading: set[str] = set()
         self.media_preview_failed: set[str] = set()
+        self.script_text_value = DEFAULT_SCRIPT_TEXT
         self.lines: list[ScriptLine] = []
+        self.used_media_urls: set[str] = set()
         self.message_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.tabs: dict[str, Frame] = {}
         self.nav_buttons: dict[str, Button] = {}
@@ -138,6 +130,7 @@ class VideoGeneratorApp:
         self._configure_style()
         self._load_config()
         self._build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(120, self._process_queue)
 
     def run(self) -> None:
@@ -228,9 +221,10 @@ class VideoGeneratorApp:
 
     def _build_api_tab(self, parent: Frame) -> None:
         ttk.Label(parent, text="Chaves de API", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(parent, text="A chave do Pexels fica salva localmente no seu usuário do Windows.", style="Muted.TLabel").pack(anchor="w", pady=(4, 22))
+        ttk.Label(parent, text="As chaves do Pexels e do Groq ficam salvas localmente no seu usuário do Windows.", style="Muted.TLabel").pack(anchor="w", pady=(4, 22))
 
         self._labeled_entry(parent, "Pexels API", self.pexels_key, show="*")
+        self._labeled_entry(parent, "Groq API", self.groq_key, show="*")
 
         Button(parent, text="Salvar chaves", command=self._save_config, bg="#111827", fg="#ffffff", activebackground="#2a3446", activeforeground="#ffffff", relief="flat", padx=18, pady=10, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(16, 0))
 
@@ -245,23 +239,147 @@ class VideoGeneratorApp:
 
         self.script_text = Text(parent, height=12, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
         self.script_text.pack(fill=BOTH, expand=True)
-        self.script_text.insert("1.0", "Hoje vamos falar sobre a China.\nEsse país é incrível.\nVamos te provar.")
+        self.script_text.insert("1.0", self.script_text_value)
 
         actions = Frame(parent, bg="#ffffff", pady=12)
         actions.pack(fill=X)
         Button(actions, text="Atualizar roteiro", command=self._refresh_lines, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
+        Button(actions, text="Gerar roteiro", command=self._start_script_generation, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
+
+    def _start_script_generation(self) -> None:
+        title = self.video_title.get().strip()
+        if not title:
+            messagebox.showerror(APP_TITLE, "Informe um título na aba Roteiro para gerar o roteiro.")
+            return
+        if not self.groq_key.get().strip():
+            messagebox.showerror(APP_TITLE, "Informe a chave de API do Groq na aba APIs.")
+            self._show_tab("apis")
+            return
+        self._save_config(show_status=False)
+        self.progress.configure(value=0, maximum=1)
+        self.progress_text.set("Gerando roteiro...")
+        self.status_text.set("Gerando roteiro com Groq...")
+        threading.Thread(target=self._generate_script_worker, args=(title,), daemon=True).start()
+
+    def _generate_script_worker(self, title: str) -> None:
+        try:
+            lines = self._groq_script_lines(title)
+            self.root.after(0, lambda: self._apply_generated_script(lines))
+            self.message_queue.put(("done", "Roteiro gerado com Groq e salvo no app."))
+        except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
+            self.message_queue.put(("error", str(exc)))
+
+    def _apply_generated_script(self, lines: list[str]) -> None:
+        script_text = "\n".join(lines)
+        self.script_text.delete("1.0", END)
+        self.script_text.insert("1.0", script_text)
+        self._refresh_lines()
+        self.progress.configure(value=1)
+
+    def _groq_script_lines(self, title: str) -> list[str]:
+        prompt = (
+            "Crie um roteiro curto para um vídeo vertical em português do Brasil com base no título informado. "
+            "O roteiro deve ter de 6 a 10 frases curtas, naturais para narração em voz alta, com gancho no começo e fechamento no final. "
+            "Cada frase deve funcionar como uma cena separada do vídeo. "
+            "Não use numeração, marcadores, emojis, markdown, aspas, chaves, colchetes ou título dentro das frases. "
+            "Responda somente com as frases finais, uma por linha, sem JSON e sem texto extra.\n\n"
+            f"Título: {title}"
+        )
+        content = self._groq_chat_content(
+            messages=[
+                {"role": "system", "content": "Você cria roteiros curtos para vídeos verticais em português do Brasil."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+            max_tokens=900,
+        )
+        try:
+            data = self._json_object_from_text(content)
+        except json.JSONDecodeError:
+            raw_lines = self._script_lines_from_text(content)
+        else:
+            raw_lines = data.get("lines")
+            if not isinstance(raw_lines, list):
+                raw_lines = self._script_lines_from_text(content)
+        lines = [self._clean_script_line(line) for line in raw_lines]
+        lines = [line for line in lines if line]
+        if not lines:
+            raise RuntimeError("O Groq retornou um roteiro vazio.")
+        return lines
+
+    def _groq_chat_content(self, messages: list[dict[str, str]], temperature: float, max_tokens: int, timeout: int = 45) -> str:
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self.groq_key.get().strip()}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": GROQ_MODEL,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            },
+            timeout=timeout,
+        )
+        if response.status_code >= 400:
+            detail = response.text.strip()
+            try:
+                error = response.json().get("error", {})
+                detail = error.get("message") or detail
+            except Exception:
+                pass
+            raise RuntimeError(f"Erro da API do Groq ({response.status_code}): {detail}")
+        return response.json()["choices"][0]["message"]["content"]
+
+    @staticmethod
+    def _json_object_from_text(content: str) -> dict[str, Any]:
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", content, flags=re.DOTALL)
+            if not match:
+                raise
+            data = json.loads(match.group(0))
+        if not isinstance(data, dict):
+            raise RuntimeError("O Groq não retornou um objeto JSON.")
+        return data
+
+    @staticmethod
+    def _script_lines_from_text(content: str) -> list[str]:
+        text = content.strip().replace("\\n", "\n")
+        lines_match = re.search(r'"lines"\s*:\s*\[(.*?)\]\s*\}?\s*$', text, flags=re.DOTALL)
+        if lines_match:
+            text = lines_match.group(1).strip()
+        text = re.sub(r'^\{?\s*"lines"\s*:\s*\[?', "", text).strip()
+        text = re.sub(r'\]?\s*\}?$', "", text).strip()
+        raw_lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if len(raw_lines) <= 1 and "," in text:
+            raw_lines = [line.strip() for line in text.split(",") if line.strip()]
+        return raw_lines
+
+    @staticmethod
+    def _clean_script_line(line: Any) -> str:
+        text = str(line).strip()
+        text = re.sub(r'^\{?\s*"?lines"?\s*:\s*\[?', "", text).strip()
+        text = re.sub(r"^[-•*\d.)\s]+", "", text).strip()
+        text = text.strip(" \t\r\n,[]{}\"'")
+        return " ".join(text.split())
 
     def _build_video_tab(self, parent: Frame) -> None:
         top = Frame(parent, bg="#ffffff")
         top.pack(fill=X)
         ttk.Label(top, text="Video", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Escolha o link do Pexels para cada frase ou deixe vazio para buscar automaticamente pela frase.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
+        ttk.Label(top, text="Escolha o link do Pexels para cada frase ou use o Groq para encontrar vídeos que combinem com a frase e o contexto do roteiro.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
 
         actions = Frame(parent, bg="#ffffff")
         actions.pack(fill=X, pady=(0, 12))
         Button(actions, text="Sincronizar frases do roteiro", command=self._refresh_lines, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
+        Button(actions, text="Atualizar videos", command=self._start_video_update, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
         Button(actions, text="Escolher pasta de saída", command=self._choose_output_dir, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
         Label(actions, textvariable=self.output_dir, bg="#ffffff", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT, padx=(12, 0))
+
+        self._entry_row(parent, "Tempo extra após o áudio quando o vídeo for maior (segundos)", self.video_extra_after_audio, "Padrão: 1. Use 0 para cortar exatamente no fim do áudio.")
 
         list_card = Frame(parent, bg="#f3f5fb", padx=10, pady=10)
         list_card.pack(fill=BOTH, expand=True)
@@ -395,7 +513,9 @@ class VideoGeneratorApp:
         instructions = (
             "Fluxo usado: abrir o ChatGPT pelo atalho, capturar a janela, localizar automaticamente o campo de texto "
             "e o botão Enviar pela imagem, enviar 'Apenas repita isso com aspas: [frase]', esperar a resposta pelo tempo configurado, "
-            "procurar os 3 pontinhos abaixo da resposta completa, abrir o menu, identificar a área nova e clicar em 'Ler em voz alta'."
+            "aguardar todo esse tempo e só então procurar os 3 pontinhos novos da última resposta (horizontal ou vertical), "
+            "movendo o mouse sobre a área da resposta para revelar botões ocultos quando necessário, abrir o menu, "
+            "identificar a área nova e clicar em 'Ler em voz alta'."
         )
         Label(content, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
 
@@ -403,7 +523,7 @@ class VideoGeneratorApp:
         shortcut_card.pack(fill=X, pady=(0, 12))
         self._entry_row(shortcut_card, "Atalho para abrir o ChatGPT", self.chatgpt_shortcut, "Padrão: alt+c. Separe teclas com +, por exemplo: ctrl+shift+g.")
         self._entry_row(shortcut_card, "Esperar antes de capturar/enviar (segundos)", self.chatgpt_send_wait, "Tempo para o app do ChatGPT abrir antes da captura automática da janela.")
-        self._entry_row(shortcut_card, "Tempo de espera da resposta (segundos)", self.chatgpt_response_wait, "Padrão: 8 segundos antes de procurar os 3 pontinhos da resposta.")
+        self._entry_row(shortcut_card, "Tempo de espera da resposta (segundos)", self.chatgpt_response_wait, "Padrão: 8 segundos antes de procurar os 3 pontinhos novos da última resposta.")
         self._entry_row(shortcut_card, "Esperar após 3 pontinhos (segundos)", self.chatgpt_menu_wait, "Padrão: 1 segundo antes de capturar o menu e clicar em Ler em voz alta.")
 
         auto_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
@@ -414,7 +534,7 @@ class VideoGeneratorApp:
             text=(
                 "Não é mais necessário informar coordenadas. Deixe o app do ChatGPT visível em tema escuro: "
                 "o VideoGenerator captura a janela ativa, encontra o campo de mensagem, o botão Enviar, "
-                "os 3 pontinhos da resposta e a opção Ler em voz alta automaticamente."
+                "os 3 pontinhos novos da última resposta e a opção Ler em voz alta automaticamente."
             ),
             bg="#f8f9fd",
             fg="#657084",
@@ -466,8 +586,13 @@ class VideoGeneratorApp:
             try:
                 data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
                 self.pexels_key.set(data.get("pexels_key", ""))
+                self.groq_key.set(data.get("groq_key", ""))
                 self.video_title.set(data.get("video_title", self.video_title.get()))
+                self.script_text_value = data.get("script_text", self.script_text_value)
+                self.lines = self._config_lines(data.get("script_lines", []))
+                self.used_media_urls.update({line.media_url for line in self.lines if line.media_url})
                 self.output_dir.set(data.get("output_dir", self.output_dir.get()))
+                self.video_extra_after_audio.set(data.get("video_extra_after_audio", self.video_extra_after_audio.get()))
                 self.subtitle_enabled.set(data.get("subtitle_enabled", self.subtitle_enabled.get()))
                 self.subtitle_position.set(data.get("subtitle_position", self.subtitle_position.get()))
                 self.subtitle_color.set(data.get("subtitle_color", self.subtitle_color.get()))
@@ -495,11 +620,16 @@ class VideoGeneratorApp:
             except json.JSONDecodeError:
                 pass
 
-    def _save_config(self) -> None:
+    def _save_config(self, show_status: bool = True) -> None:
+        self.script_text_value = self._script_text_content()
         data = {
             "pexels_key": self.pexels_key.get().strip(),
+            "groq_key": self.groq_key.get().strip(),
             "video_title": self.video_title.get().strip(),
+            "script_text": self.script_text_value,
+            "script_lines": self._config_script_lines(),
             "output_dir": self.output_dir.get().strip(),
+            "video_extra_after_audio": self.video_extra_after_audio.get().strip(),
             "subtitle_enabled": self.subtitle_enabled.get().strip(),
             "subtitle_position": self.subtitle_position.get().strip(),
             "subtitle_color": self.subtitle_color.get().strip(),
@@ -526,13 +656,50 @@ class VideoGeneratorApp:
             "music_volume": self.music_volume.get().strip(),
         }
         CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        self.status_text.set("Configurações salvas no perfil do usuário.")
+        if show_status:
+            self.status_text.set("Configurações salvas no perfil do usuário.")
+
+    def _script_text_content(self) -> str:
+        if hasattr(self, "script_text"):
+            return self.script_text.get("1.0", "end-1c")
+        return self.script_text_value
+
+    @staticmethod
+    def _config_lines(raw_lines: Any) -> list[ScriptLine]:
+        if not isinstance(raw_lines, list):
+            return []
+        lines: list[ScriptLine] = []
+        for item in raw_lines:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text", "")).strip()
+            if text:
+                media_url = str(item.get("media_url", "")).strip()
+                lines.append(ScriptLine(text=text, media_url=media_url))
+        return lines
+
+    def _all_media_urls(self) -> set[str]:
+        return {line.media_url.strip() for line in self.lines if line.media_url.strip()} | getattr(self, "used_media_urls", set())
+
+    def _config_script_lines(self) -> list[dict[str, str]]:
+        existing = {line.text: line.media_url for line in self.lines}
+        phrases = [line.strip() for line in self.script_text_value.splitlines() if line.strip()]
+        if phrases:
+            return [{"text": phrase, "media_url": existing.get(phrase, "")} for phrase in phrases]
+        return [{"text": line.text, "media_url": line.media_url} for line in self.lines]
+
+    def _on_close(self) -> None:
+        try:
+            self._save_config(show_status=False)
+        finally:
+            self.root.destroy()
 
     def _refresh_lines(self) -> None:
         existing = {line.text: line.media_url for line in self.lines}
         phrases = [line.strip() for line in self.script_text.get("1.0", END).splitlines() if line.strip()]
         self.lines = [ScriptLine(text=phrase, media_url=existing.get(phrase, "")) for phrase in phrases]
         self._render_lines()
+        self._save_config(show_status=False)
         self.status_text.set(f"{len(self.lines)} frase(s) sincronizada(s).")
 
     def _render_lines(self) -> None:
@@ -556,6 +723,7 @@ class VideoGeneratorApp:
             buttons = Frame(row, bg="#ffffff")
             buttons.pack(side=RIGHT, padx=(12, 0))
             Button(buttons, text="Colar link", command=lambda idx=index: self._paste_line_link(idx), bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT)
+            Button(buttons, text="Gerar outro video", command=lambda idx=index: self._start_single_video_update(idx), bg="#eef1ff", fg="#27319f", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(8, 0))
             Button(buttons, text="Editar", command=lambda idx=index: self._edit_line_link(idx), bg="#eef1ff", fg="#27319f", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(8, 0))
 
     def _media_preview_widget(self, parent: Frame, media_url: str) -> Frame:
@@ -671,8 +839,10 @@ class VideoGeneratorApp:
         if not link:
             messagebox.showerror(APP_TITLE, "A área de transferência está vazia. Copie um link do Pexels e clique em Colar link.")
             return
+        self.used_media_urls.add(link)
         self.lines[index].media_url = link
         self._render_lines()
+        self._save_config(show_status=False)
         self.status_text.set(f"Link colado na frase {index + 1}.")
 
     def _edit_line_link(self, index: int) -> None:
@@ -690,11 +860,182 @@ class VideoGeneratorApp:
         Entry(dialog, textvariable=value, bd=0, bg="#f3f5fb", fg="#111827", font=("Segoe UI", 10)).pack(fill=X, padx=20, ipady=9)
 
         def save() -> None:
-            self.lines[index].media_url = value.get().strip()
+            media_url = value.get().strip()
+            if media_url:
+                self.used_media_urls.add(media_url)
+            self.lines[index].media_url = media_url
             self._render_lines()
+            self._save_config(show_status=False)
             dialog.destroy()
 
         Button(dialog, text="Salvar link", command=save, bg="#5b6cff", fg="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(anchor="e", padx=20, pady=18)
+
+    def _start_single_video_update(self, index: int) -> None:
+        self._refresh_lines()
+        if index < 0 or index >= len(self.lines):
+            messagebox.showerror(APP_TITLE, "Não encontrei essa frase no roteiro sincronizado.")
+            return
+        if not self.pexels_key.get().strip():
+            messagebox.showerror(APP_TITLE, "Informe a chave de API do Pexels na aba APIs.")
+            self._show_tab("apis")
+            return
+        if not self.groq_key.get().strip():
+            messagebox.showerror(APP_TITLE, "Informe a chave de API do Groq na aba APIs.")
+            self._show_tab("apis")
+            return
+        self.progress.configure(value=0, maximum=1)
+        self.progress_text.set("Gerando outro video...")
+        self.status_text.set(f"Procurando outro video para a frase {index + 1}...")
+        threading.Thread(target=self._single_video_update_worker, args=(index,), daemon=True).start()
+
+    def _single_video_update_worker(self, index: int) -> None:
+        try:
+            line = self.lines[index]
+            query = self._groq_single_pexels_query(index)
+            media_url = self._search_pexels(query, exclude_urls=self._all_media_urls())
+            self.used_media_urls.update({line.media_url, media_url})
+            self.lines[index].media_url = media_url
+            self.root.after(0, self._render_lines)
+            self.root.after(0, lambda: self._save_config(show_status=False))
+            self.message_queue.put(("step", f"Outro video aplicado na frase {index + 1}."))
+            self.message_queue.put(("status", f"Outro video aplicado na frase {index + 1}."))
+        except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
+            self.message_queue.put(("error", str(exc)))
+
+    def _script_subject_keywords(self) -> str:
+        title = self.video_title.get().strip()
+        text = " ".join([title, *(line.text for line in self.lines)])
+        words = re.findall(r"[A-Za-zÀ-ÿ0-9]+", text)
+        stopwords = {
+            "a", "o", "os", "as", "um", "uma", "uns", "umas", "de", "do", "da", "dos", "das", "e", "em", "no", "na", "nos", "nas",
+            "para", "por", "com", "sem", "sobre", "que", "se", "ao", "aos", "mais", "menos", "muito", "muita", "muitos", "muitas",
+            "video", "vídeo", "roteiro", "frase", "hoje", "vamos", "falar", "te", "provar", "esse", "essa", "este", "esta",
+        }
+        keywords: list[str] = []
+        for word in words:
+            clean = word.strip()
+            if len(clean) < 3 or clean.lower() in stopwords:
+                continue
+            if clean.lower() not in {item.lower() for item in keywords}:
+                keywords.append(clean)
+            if len(keywords) >= 5:
+                break
+        return ", ".join(keywords or ([title] if title else []))
+
+    def _ensure_subject_in_query(self, query: str) -> str:
+        clean_query = " ".join(str(query).split()).strip(' ,.;:[]{}"\'')
+        subject = self.video_title.get().strip()
+        if not subject:
+            return clean_query
+        subject_terms = [word.lower() for word in re.findall(r"[A-Za-zÀ-ÿ0-9]+", subject) if len(word) >= 3]
+        subject_aliases = {"china": ["chinese", "great wall", "beijing", "shanghai"]}
+        expanded_terms = [term for term in subject_terms]
+        for term in subject_terms:
+            expanded_terms.extend(subject_aliases.get(term, []))
+        query_lower = clean_query.lower()
+        if any(term in query_lower for term in expanded_terms):
+            return clean_query
+        subject_prefix = " ".join(subject.split()[:3])
+        return f"{subject_prefix} {clean_query}".strip()
+
+    def _groq_single_pexels_query(self, index: int) -> str:
+        context = "\n".join(f"{line_index}. {line.text}" for line_index, line in enumerate(self.lines, start=1))
+        current_url = self.lines[index].media_url.strip() or "sem video atual"
+        prompt = (
+            "Crie uma nova pesquisa para encontrar um video vertical no Pexels para a frase indicada. "
+            "A busca DEVE manter o assunto principal do título/roteiro. Por exemplo, se o título for China, todas as buscas devem conter China ou um local/símbolo claramente chinês. "
+            "Use a frase apenas para escolher o tipo de cena dentro desse assunto, e gere uma busca diferente da tentativa anterior. "
+            "A pesquisa deve estar em inglês, ter 3 a 7 palavras, ser visual, concreta e adequada ao Pexels. "
+            "Responda somente JSON válido no formato {\"query\":\"...\"}.\n\n"
+            f"Título do vídeo / assunto principal: {self.video_title.get().strip() or 'video'}\n"
+            f"Palavras-chave do assunto: {self._script_subject_keywords()}\n"
+            f"Frase selecionada ({index + 1}): {self.lines[index].text}\n"
+            f"Video atual a evitar: {current_url}\n"
+            f"Roteiro completo:\n{context}"
+        )
+        content = self._groq_chat_content(
+            messages=[
+                {"role": "system", "content": "Você cria buscas curtas e variadas para vídeos de banco de imagem."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.55,
+            max_tokens=180,
+        )
+        try:
+            data = self._json_object_from_text(content)
+            query = str(data.get("query", "")).strip()
+        except json.JSONDecodeError:
+            query = self._clean_script_line(content.splitlines()[0] if content.splitlines() else content)
+        query = self._ensure_subject_in_query(query)
+        if not query:
+            raise RuntimeError("O Groq não retornou uma pesquisa para o novo video.")
+        return query
+
+    def _start_video_update(self) -> None:
+        self._refresh_lines()
+        if not self.lines:
+            messagebox.showerror(APP_TITLE, "Adicione pelo menos uma frase ao roteiro.")
+            return
+        if not self.pexels_key.get().strip():
+            messagebox.showerror(APP_TITLE, "Informe a chave de API do Pexels na aba APIs.")
+            self._show_tab("apis")
+            return
+        if not self.groq_key.get().strip():
+            messagebox.showerror(APP_TITLE, "Informe a chave de API do Groq na aba APIs.")
+            self._show_tab("apis")
+            return
+        self._save_config()
+        self.progress.configure(value=0, maximum=max(len(self.lines), 1))
+        self.progress_text.set("Atualizando videos...")
+        self.status_text.set("Gerando pesquisas com Groq...")
+        threading.Thread(target=self._update_videos_worker, daemon=True).start()
+
+    def _update_videos_worker(self) -> None:
+        try:
+            phrases = [line.text for line in self.lines]
+            queries = self._groq_pexels_queries(phrases)
+            for index, (line, query) in enumerate(zip(self.lines, queries, strict=True), start=1):
+                self._queue_status(f"Pesquisando vídeo {index}/{len(self.lines)}: {query}", step=True)
+                media_url = self._search_pexels(query, exclude_urls=self._all_media_urls())
+                self.used_media_urls.add(media_url)
+                self.lines[index - 1].media_url = media_url
+                self.root.after(0, self._render_lines)
+            self.root.after(0, lambda: self._save_config(show_status=False))
+            self.message_queue.put(("done", "Videos atualizados com links do Pexels e previews em carregamento."))
+        except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
+            self.message_queue.put(("error", str(exc)))
+
+    def _groq_pexels_queries(self, phrases: list[str]) -> list[str]:
+        context = "\n".join(f"{index}. {phrase}" for index, phrase in enumerate(phrases, start=1))
+        prompt = (
+            "Você vai criar pesquisas para encontrar vídeos verticais no Pexels. "
+            "Todas as pesquisas DEVEM manter o assunto principal do título/roteiro. Por exemplo, se o vídeo é sobre China, busque China, Chinese city, Great Wall, Chinese culture etc.; não use cenas genéricas sem China. "
+            "Use cada frase apenas para variar o tipo de cena dentro desse mesmo assunto principal. "
+            "As pesquisas devem estar em inglês, com 3 a 7 palavras, visuais, concretas e adequadas ao Pexels. "
+            "Responda somente JSON válido no formato {\"queries\":[...]} com exatamente uma pesquisa para cada frase.\n\n"
+            f"Título do vídeo / assunto principal: {self.video_title.get().strip() or 'video'}\n"
+            f"Palavras-chave do assunto: {self._script_subject_keywords()}\n"
+            f"Roteiro:\n{context}"
+        )
+        content = self._groq_chat_content(
+            messages=[
+                {"role": "system", "content": "Você cria termos de busca curtos para bancos de vídeos."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=512,
+        )
+        try:
+            data = self._json_object_from_text(content)
+        except json.JSONDecodeError:
+            raise RuntimeError("O Groq não retornou JSON com as pesquisas de vídeo.")
+        queries = data.get("queries")
+        if not isinstance(queries, list):
+            raise RuntimeError("O Groq não retornou a lista 'queries'.")
+        clean_queries = [self._ensure_subject_in_query(str(query).strip()) for query in queries if str(query).strip()]
+        if len(clean_queries) != len(phrases):
+            raise RuntimeError("O Groq retornou uma quantidade diferente de pesquisas em relação às frases do roteiro.")
+        return clean_queries
 
     def _choose_output_dir(self) -> None:
         folder = filedialog.askdirectory(initialdir=self.output_dir.get() or str(Path.home()))
@@ -804,23 +1145,15 @@ class VideoGeneratorApp:
         typed_composer = self._find_chatgpt_composer(typed_capture.image)
         send_point = self._to_screen(typed_capture, self._find_chatgpt_send_button(typed_capture.image, typed_composer))
         pyautogui.click(send_point.x, send_point.y)
+        time.sleep(0.75)
+        sent_capture = self._capture_chatgpt_window()
 
         wait_seconds = self._safe_float(self.chatgpt_response_wait.get(), 8.0, 1.0, 120.0)
-        response_capture, local_menu_point = self._wait_for_response_more_button(typed_capture, wait_seconds)
+        response_capture, local_menu_point = self._wait_for_response_more_button(sent_capture, wait_seconds)
         menu_point = self._to_screen(response_capture, local_menu_point)
         record_duration = self._estimated_tts_duration(text)
-        min_rms = 0.0001
 
-        rms = self._play_read_aloud_and_record(response_capture, menu_point, output_path, record_duration, preserve_unknown_sessions=False)
-        if rms < min_rms:
-            self.message_queue.put(("status", "Áudio ficou silencioso; tentando gravar novamente preservando sessões desconhecidas do ChatGPT..."))
-            rms = self._play_read_aloud_and_record(response_capture, menu_point, output_path, record_duration, preserve_unknown_sessions=True)
-        if rms < min_rms:
-            self.message_queue.put((
-                "status",
-                "A gravação ficou muito baixa, mas o áudio foi mantido para não interromper a geração. "
-                "Se a frase sair muda, aumente o volume do ChatGPT/Windows e tente novamente.",
-            ))
+        self._play_read_aloud_and_record(response_capture, menu_point, output_path, record_duration)
 
     def _play_read_aloud_and_record(
         self,
@@ -828,7 +1161,6 @@ class VideoGeneratorApp:
         menu_point: ScreenPoint,
         output_path: Path,
         record_duration: float,
-        preserve_unknown_sessions: bool,
     ) -> float:
         pyautogui.click(menu_point.x, menu_point.y)
         time.sleep(self._safe_float(self.chatgpt_menu_wait.get(), 1.0, 0.2, 10.0))
@@ -838,8 +1170,7 @@ class VideoGeneratorApp:
             pyautogui.click(read_point.x, read_point.y)
             time.sleep(0.05)
 
-        with self._chatgpt_audio_only(preserve_unknown_sessions=preserve_unknown_sessions):
-            return self._record_system_audio(output_path, record_duration, on_ready=start_read_aloud)
+        return self._record_system_audio(output_path, record_duration, on_ready=start_read_aloud)
 
     def _capture_chatgpt_window(self) -> WindowCapture:
         window = None
@@ -945,10 +1276,83 @@ class VideoGeneratorApp:
         return ScreenPoint(composer.right - 36, composer.top + composer.height // 2)
 
     def _wait_for_response_more_button(self, before_capture: WindowCapture, timeout: float) -> tuple[WindowCapture, ScreenPoint]:
-        del before_capture
+        before_candidates = self._response_more_candidates(before_capture.image)
         time.sleep(max(timeout, 1.0))
+
         capture = self._capture_chatgpt_window()
-        return capture, self._find_response_more_button(capture.image)
+        after_candidates = self._response_more_candidates(capture.image)
+        best_candidate = self._best_response_more_candidate(before_capture.image, before_candidates, capture.image, after_candidates)
+        if best_candidate is not None:
+            return capture, best_candidate
+
+        revealed = self._capture_chatgpt_with_revealed_actions(capture)
+        for reveal_capture in revealed:
+            reveal_candidates = self._response_more_candidates(reveal_capture.image)
+            best_candidate = self._best_response_more_candidate(before_capture.image, before_candidates, reveal_capture.image, reveal_candidates)
+            if best_candidate is not None:
+                return reveal_capture, best_candidate
+            if reveal_candidates:
+                capture = reveal_capture
+                after_candidates = reveal_candidates
+
+        settle_deadline = time.monotonic() + 4.5
+        while time.monotonic() < settle_deadline:
+            time.sleep(0.35)
+            capture = self._capture_chatgpt_window()
+            after_candidates = self._response_more_candidates(capture.image)
+            best_candidate = self._best_response_more_candidate(before_capture.image, before_candidates, capture.image, after_candidates)
+            if best_candidate is not None:
+                return capture, best_candidate
+            for reveal_capture in self._capture_chatgpt_with_revealed_actions(capture):
+                reveal_candidates = self._response_more_candidates(reveal_capture.image)
+                best_candidate = self._best_response_more_candidate(before_capture.image, before_candidates, reveal_capture.image, reveal_candidates)
+                if best_candidate is not None:
+                    return reveal_capture, best_candidate
+                if reveal_candidates:
+                    capture = reveal_capture
+                    after_candidates = reveal_candidates
+
+        if after_candidates:
+            return capture, self._select_response_more_candidate(capture.image, after_candidates)
+
+        raise RuntimeError(
+            "Não consegui localizar os 3 pontinhos da resposta do ChatGPT depois da espera configurada. "
+            "Aumente o tempo de espera da resposta na aba Audio se o ChatGPT ainda estiver escrevendo."
+        )
+
+    def _best_response_more_candidate(
+        self,
+        before_image: Any,
+        before_candidates: list[ScreenPoint],
+        after_image: Any,
+        after_candidates: list[ScreenPoint],
+    ) -> ScreenPoint | None:
+        return (
+            self._best_new_more_candidate(before_candidates, after_candidates)
+            or self._best_changed_more_candidate(before_image, after_image, after_candidates)
+        )
+
+    def _capture_chatgpt_with_revealed_actions(self, capture: WindowCapture) -> list[WindowCapture]:
+        array = self._image_array(capture.image)
+        height, width, _ = array.shape
+        try:
+            composer = self._find_chatgpt_composer(capture.image)
+            bottom_limit = max(composer.top - 18, int(height * 0.50))
+        except RuntimeError:
+            bottom_limit = int(height * 0.82)
+        y_positions = [
+            max(int(height * 0.42), bottom_limit - 40),
+            max(int(height * 0.35), bottom_limit - 95),
+            max(int(height * 0.28), bottom_limit - 155),
+        ]
+        x_positions = [int(width * 0.58), int(width * 0.66), int(width * 0.74)]
+        captures: list[WindowCapture] = []
+        for y in y_positions:
+            for x in x_positions:
+                pyautogui.moveTo(capture.offset_x + x, capture.offset_y + y, duration=0.05)
+                time.sleep(0.12)
+                captures.append(self._capture_chatgpt_window())
+        return captures
 
     def _find_response_more_button(self, image: Any) -> ScreenPoint:
         candidates = self._response_more_candidates(image)
@@ -960,43 +1364,60 @@ class VideoGeneratorApp:
         array = self._image_array(image)
         height, _, _ = array.shape
         channels_spread = array.max(axis=2) - array.min(axis=2)
-        bright_mask = (
-            (array[:, :, 0] >= 185)
-            & (array[:, :, 1] >= 185)
-            & (array[:, :, 2] >= 185)
-            & (channels_spread <= 55)
-        )
-        bright_mask[: int(height * 0.14), :] = False
+        channel_mean = array.mean(axis=2)
+        dot_masks = [
+            (channel_mean >= 135) & (channels_spread <= 85),
+            (channel_mean <= 115) & (channels_spread <= 85),
+        ]
+        for dot_mask in dot_masks:
+            dot_mask[: int(height * 0.14), :] = False
         try:
             composer = self._find_chatgpt_composer(image)
             if composer.top > int(height * 0.60):
-                bright_mask[max(composer.top - 4, 0) :, :] = False
+                for dot_mask in dot_masks:
+                    dot_mask[max(composer.top - 4, 0) :, :] = False
             else:
-                bright_mask[int(height * 0.82) :, :] = False
+                for dot_mask in dot_masks:
+                    dot_mask[int(height * 0.82) :, :] = False
         except RuntimeError:
-            bright_mask[int(height * 0.82) :, :] = False
+            for dot_mask in dot_masks:
+                dot_mask[int(height * 0.82) :, :] = False
 
         tiny = [
             component
-            for component in self._components(bright_mask, min_area=2)
-            if 1 <= component.width <= 12
-            and 1 <= component.height <= 12
-            and component.width * component.height <= 100
+            for dot_mask in dot_masks
+            for component in self._components(dot_mask, min_area=2)
+            if 1 <= component.width <= 14
+            and 1 <= component.height <= 14
+            and component.width * component.height <= 130
         ]
         centers = [component.center for component in tiny]
         candidates: list[ScreenPoint] = []
+
+        def add_candidate(candidate: ScreenPoint) -> None:
+            if not any(abs(candidate.x - existing.x) <= 3 and abs(candidate.y - existing.y) <= 3 for existing in candidates):
+                candidates.append(candidate)
+
         for first in centers:
-            neighbors = [point for point in centers if abs(point.y - first.y) <= 5 and 4 <= point.x - first.x <= 30]
-            for second in neighbors:
-                third_options = [point for point in centers if abs(point.y - first.y) <= 5 and 4 <= point.x - second.x <= 30]
+            horizontal_neighbors = [point for point in centers if abs(point.y - first.y) <= 6 and 3 <= point.x - first.x <= 34]
+            for second in horizontal_neighbors:
+                third_options = [point for point in centers if abs(point.y - first.y) <= 6 and 3 <= point.x - second.x <= 34]
                 for third in third_options:
                     span = third.x - first.x
                     first_gap = second.x - first.x
                     second_gap = third.x - second.x
-                    if 10 <= span <= 44 and max(first_gap, second_gap) <= min(first_gap, second_gap) * 2.2:
-                        candidate = ScreenPoint((first.x + third.x) // 2, int(round((first.y + second.y + third.y) / 3)))
-                        if not any(abs(candidate.x - existing.x) <= 3 and abs(candidate.y - existing.y) <= 3 for existing in candidates):
-                            candidates.append(candidate)
+                    if 8 <= span <= 52 and max(first_gap, second_gap) <= min(first_gap, second_gap) * 2.6:
+                        add_candidate(ScreenPoint((first.x + third.x) // 2, int(round((first.y + second.y + third.y) / 3))))
+
+            vertical_neighbors = [point for point in centers if abs(point.x - first.x) <= 6 and 3 <= point.y - first.y <= 34]
+            for second in vertical_neighbors:
+                third_options = [point for point in centers if abs(point.x - first.x) <= 6 and 3 <= point.y - second.y <= 34]
+                for third in third_options:
+                    span = third.y - first.y
+                    first_gap = second.y - first.y
+                    second_gap = third.y - second.y
+                    if 8 <= span <= 52 and max(first_gap, second_gap) <= min(first_gap, second_gap) * 2.6:
+                        add_candidate(ScreenPoint(int(round((first.x + second.x + third.x) / 3)), (first.y + third.y) // 2))
         return candidates
 
     def _select_response_more_candidate(self, image: Any, candidates: list[ScreenPoint]) -> ScreenPoint:
@@ -1097,73 +1518,28 @@ class VideoGeneratorApp:
                     components.append(ScreenBounds(min_x, min_y, max_x + 1, max_y + 1))
         return components
 
-    @contextmanager
-    def _chatgpt_audio_only(self, preserve_unknown_sessions: bool = False):
-        restored_sessions: list[tuple[Any, int, float]] = []
-        if sys.platform != "win32":
-            yield
-            return
-
-        chatgpt_pid = self._active_window_process_id()
-        pycaw_module = importlib.import_module("pycaw.pycaw")
-        audio_utilities = pycaw_module.AudioUtilities
-        simple_audio_volume = pycaw_module.ISimpleAudioVolume
-        for session in audio_utilities.GetAllSessions():
-            process = getattr(session, "Process", None)
-            process_id = getattr(process, "pid", None) if process else None
-            process_name = process.name().lower() if process else ""
-            volume = session._ctl.QueryInterface(simple_audio_volume)
-            if preserve_unknown_sessions and not process_name:
-                if volume.GetMute():
-                    volume.SetMute(0, None)
-                continue
-            if self._is_chatgpt_audio_session(process_name, process_id, chatgpt_pid):
-                self._remember_chatgpt_audio_process(process_name)
-                if volume.GetMute():
-                    volume.SetMute(0, None)
-                continue
-            restored_sessions.append((volume, volume.GetMute(), volume.GetMasterVolume()))
-            volume.SetMasterVolume(0.0, None)
-            volume.SetMute(1, None)
-
+    def _default_loopback_microphone(self) -> Any:
+        speaker = sc.default_speaker()
+        speaker_name = str(getattr(speaker, "name", speaker))
         try:
-            yield
-        finally:
-            for volume, muted, master_volume in restored_sessions:
-                volume.SetMasterVolume(master_volume, None)
-                volume.SetMute(muted, None)
-
-    def _active_window_process_id(self) -> int | None:
-        if sys.platform != "win32":
-            return None
-        window_handle = None
-        try:
-            window = pyautogui.getActiveWindow() if hasattr(pyautogui, "getActiveWindow") else None
-            window_handle = getattr(window, "_hWnd", None) or getattr(window, "_hwnd", None) or getattr(window, "hWnd", None)
+            microphone = sc.get_microphone(id=speaker_name, include_loopback=True)
+            if microphone is not None:
+                return microphone
         except Exception:
-            window_handle = None
-        if not window_handle:
-            return None
-        try:
-            process_id = ctypes.c_ulong()
-            ctypes.windll.user32.GetWindowThreadProcessId(int(window_handle), ctypes.byref(process_id))
-            return int(process_id.value) or None
-        except Exception:
-            return None
+            pass
 
-    def _is_chatgpt_audio_session(self, process_name: str, process_id: int | None, chatgpt_pid: int | None) -> bool:
-        if chatgpt_pid is not None and process_id == chatgpt_pid:
-            return True
-        return self._is_chatgpt_process(process_name)
-
-    def _is_chatgpt_process(self, process_name: str) -> bool:
-        normalized = process_name.lower()
-        return any(known_name in normalized for known_name in self.chatgpt_audio_process_names)
-
-    def _remember_chatgpt_audio_process(self, process_name: str) -> None:
-        normalized = process_name.lower()
-        if normalized:
-            self.chatgpt_audio_process_names.add(normalized)
+        microphones = list(sc.all_microphones(include_loopback=True))
+        speaker_words = {word for word in re.split(r"\W+", speaker_name.lower()) if len(word) >= 3}
+        loopback_microphones = [microphone for microphone in microphones if "loopback" in str(getattr(microphone, "name", microphone)).lower()]
+        for microphone in loopback_microphones or microphones:
+            microphone_name = str(getattr(microphone, "name", microphone)).lower()
+            if speaker_words and any(word in microphone_name for word in speaker_words):
+                return microphone
+        if loopback_microphones:
+            return loopback_microphones[0]
+        if microphones:
+            return microphones[0]
+        raise RuntimeError("Não encontrei um dispositivo de gravação loopback para capturar o áudio do sistema.")
 
     @contextmanager
     def _continuous_loopback_recorder(self):
@@ -1174,8 +1550,7 @@ class VideoGeneratorApp:
             yield
             return
 
-        speaker = sc.default_speaker()
-        microphone = sc.get_microphone(id=str(speaker.name), include_loopback=True)
+        microphone = self._default_loopback_microphone()
         stop_event = threading.Event()
         lock = threading.Lock()
         self._loopback_chunks: list[np.ndarray] = []
@@ -1225,8 +1600,7 @@ class VideoGeneratorApp:
         def consume_chunk(chunk: np.ndarray) -> bool:
             nonlocal speech_started, silent_time, elapsed
             chunks.append(chunk)
-            mono_chunk = chunk.mean(axis=1) if chunk.ndim > 1 else chunk
-            level = float(np.sqrt(np.mean(np.square(mono_chunk)))) if mono_chunk.size else 0.0
+            level = self._audio_level(chunk)
             if level > silence_threshold:
                 speech_started = True
                 silent_time = 0.0
@@ -1261,8 +1635,7 @@ class VideoGeneratorApp:
                     consume_chunk(chunk)
         else:
             chunk_frames = int(sample_rate * chunk_seconds)
-            speaker = sc.default_speaker()
-            microphone = sc.get_microphone(id=str(speaker.name), include_loopback=True)
+            microphone = self._default_loopback_microphone()
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message="data discontinuity in recording.*")
                 with microphone.recorder(samplerate=sample_rate) as recorder:
@@ -1273,8 +1646,7 @@ class VideoGeneratorApp:
                             break
 
         audio = np.concatenate(chunks) if chunks else np.zeros(int(sample_rate * 0.5), dtype=np.float32)
-        if audio.ndim > 1:
-            audio = audio.mean(axis=1)
+        audio = self._best_mono_audio(audio)
         audio = self._trim_silence(audio, threshold=silence_threshold)
         validation_level = self._audio_validation_level(audio)
         audio = self._normalize_recorded_audio(audio)
@@ -1286,6 +1658,23 @@ class VideoGeneratorApp:
             wav_file.setframerate(sample_rate)
             wav_file.writeframes(pcm.tobytes())
         return validation_level
+
+    @staticmethod
+    def _best_mono_audio(audio: np.ndarray) -> np.ndarray:
+        if audio.ndim <= 1:
+            return audio
+        channel_rms = np.sqrt(np.mean(np.square(audio), axis=0))
+        strongest_channel = int(np.argmax(channel_rms))
+        return audio[:, strongest_channel]
+
+    @staticmethod
+    def _audio_level(audio: np.ndarray) -> float:
+        if audio.size == 0:
+            return 0.0
+        if audio.ndim <= 1:
+            return float(np.sqrt(np.mean(np.square(audio))))
+        channel_rms = np.sqrt(np.mean(np.square(audio), axis=0))
+        return float(np.max(channel_rms))
 
     @staticmethod
     def _audio_validation_level(audio: np.ndarray) -> float:
@@ -1339,7 +1728,8 @@ class VideoGeneratorApp:
     def _download_media(self, line: ScriptLine, workdir: Path, index: int) -> Path:
         media_url = line.media_url.strip()
         if not media_url:
-            media_url = self._search_pexels(line.text)
+            media_url = self._search_pexels(line.text, exclude_urls=self._all_media_urls())
+            self.used_media_urls.add(media_url)
             self.lines[index - 1].media_url = media_url
             self.root.after(0, self._render_lines)
         media_url = self._resolve_pexels_page_url(media_url)
@@ -1378,39 +1768,83 @@ class VideoGeneratorApp:
                 return src["large2x"]
         return media_url
 
-    def _search_pexels(self, query: str) -> str:
+    def _search_pexels(self, query: str, exclude_urls: set[str] | None = None) -> str:
         headers = {"Authorization": self.pexels_key.get().strip()}
+        excluded = {self._media_identity(url) for url in (exclude_urls or set()) if url.strip()}
+        first_candidate = ""
+
+        def remember_candidate(url: str) -> str | None:
+            nonlocal first_candidate
+            clean_url = url.strip()
+            if not clean_url:
+                return None
+            if not first_candidate:
+                first_candidate = clean_url
+            if self._media_identity(clean_url) not in excluded:
+                return clean_url
+            return None
+
         video_response = requests.get(
             "https://api.pexels.com/videos/search",
             headers=headers,
-            params={"query": query, "per_page": 1, "orientation": "portrait"},
+            params={"query": query, "per_page": 8, "orientation": "portrait"},
             timeout=30,
         )
         video_response.raise_for_status()
         videos = video_response.json().get("videos", [])
-        if videos:
-            files = videos[0].get("video_files", [])
+        for video in videos:
+            candidate = remember_candidate(str(video.get("url", "")))
+            if candidate:
+                return candidate
+            files = video.get("video_files", [])
             portrait_files = sorted(files, key=lambda item: (item.get("width", 0) < item.get("height", 0), item.get("height", 0)), reverse=True)
-            if portrait_files:
-                return portrait_files[0]["link"]
+            for media_file in portrait_files:
+                candidate = remember_candidate(str(media_file.get("link", "")))
+                if candidate:
+                    return candidate
 
         photo_response = requests.get(
             "https://api.pexels.com/v1/search",
             headers=headers,
-            params={"query": query, "per_page": 1, "orientation": "portrait"},
+            params={"query": query, "per_page": 8, "orientation": "portrait"},
             timeout=30,
         )
         photo_response.raise_for_status()
         photos = photo_response.json().get("photos", [])
-        if photos:
-            return photos[0]["src"]["large2x"]
-        raise RuntimeError(f"Nenhuma mídia encontrada no Pexels para: {query}")
+        for photo in photos:
+            candidate = remember_candidate(str(photo.get("url", "") or photo.get("src", {}).get("large2x", "")))
+            if candidate:
+                return candidate
+        if first_candidate and not excluded:
+            return first_candidate
+        raise RuntimeError(f"Nenhuma mídia nova encontrada no Pexels para: {query}")
+
+    @staticmethod
+    def _media_identity(media_url: str) -> str:
+        parsed = urllib.parse.urlparse(media_url.strip())
+        match = re.search(r"(\d+)(?:/)?$", parsed.path)
+        if "pexels.com" in parsed.netloc and match:
+            return f"pexels:{match.group(1)}"
+        return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", "")).rstrip("/")
 
     def _create_clip(self, ffmpeg: str, media_path: Path, audio_path: Path, clip_path: Path, subtitle_text: str) -> None:
-        duration = self._audio_duration(audio_path)
-        video_filter = self._video_filter(subtitle_text)
+        audio_duration = self._audio_duration(audio_path)
         image_exts = {".jpg", ".jpeg", ".png", ".webp"}
-        if media_path.suffix.lower() in image_exts:
+        is_image = media_path.suffix.lower() in image_exts
+        media_duration = 0.0 if is_image else self._media_duration(ffmpeg, media_path)
+        extra_after_audio = self._safe_float(self.video_extra_after_audio.get(), 1.0, 0.0, 60.0)
+        if media_duration > audio_duration:
+            duration = min(media_duration, audio_duration + extra_after_audio)
+        elif media_duration > 0:
+            duration = audio_duration
+        else:
+            duration = audio_duration
+        video_filter = self._video_filter(subtitle_text, clip_path.with_suffix(".subtitle.ass"), duration, audio_duration)
+        filter_complex = (
+            f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[v];"
+            f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
+        )
+        if is_image:
             cmd = [
                 ffmpeg,
                 "-y",
@@ -1422,97 +1856,203 @@ class VideoGeneratorApp:
                 str(media_path),
                 "-i",
                 str(audio_path),
-                "-vf",
-                video_filter,
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[v]",
+                "-map",
+                "[a]",
                 "-r",
                 FPS,
                 "-c:v",
                 "libx264",
                 "-c:a",
                 "aac",
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0",
-                "-shortest",
                 str(clip_path),
             ]
         else:
-            cmd = [
-                ffmpeg,
-                "-y",
-                "-stream_loop",
-                "-1",
-                "-i",
-                str(media_path),
-                "-i",
-                str(audio_path),
-                "-t",
-                f"{duration:.3f}",
-                "-vf",
-                video_filter,
-                "-r",
-                FPS,
-                "-c:v",
-                "libx264",
-                "-c:a",
-                "aac",
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0",
-                "-shortest",
-                str(clip_path),
-            ]
+            cmd = [ffmpeg, "-y"]
+            if media_duration <= 0 or media_duration < duration - 0.05:
+                cmd.extend(["-stream_loop", "-1"])
+            cmd.extend(
+                [
+                    "-i",
+                    str(media_path),
+                    "-i",
+                    str(audio_path),
+                    "-t",
+                    f"{duration:.3f}",
+                    "-filter_complex",
+                    filter_complex,
+                    "-map",
+                    "[v]",
+                    "-map",
+                    "[a]",
+                    "-r",
+                    FPS,
+                    "-c:v",
+                    "libx264",
+                    "-c:a",
+                    "aac",
+                    str(clip_path),
+                ]
+            )
         self._run_ffmpeg(cmd)
 
-    def _video_filter(self, subtitle_text: str) -> str:
-        base_filter = f"scale={VIDEO_SIZE}:force_original_aspect_ratio=increase,crop={VIDEO_SIZE},format=yuv420p"
+    def _video_filter(
+        self,
+        subtitle_text: str,
+        subtitle_file: Path | None = None,
+        clip_duration: float = 0.0,
+        speech_duration: float = 0.0,
+    ) -> str:
+        base_filter = f"scale={VIDEO_SIZE}:force_original_aspect_ratio=increase,crop={VIDEO_SIZE},setsar=1,format=yuv420p"
         if self.subtitle_enabled.get() != "Sim":
             return base_filter
-        font = self._escape_drawtext(self.subtitle_font.get().strip() or "Arial")
-        font_size = self._safe_int(self.subtitle_size.get(), 64, 1, 160)
-        text = self._escape_drawtext(self._wrap_subtitle_text(subtitle_text, font_size))
-        font_color = self._ffmpeg_color(self.subtitle_color.get(), "0xFFFFFF")
-        y_expr = self._subtitle_y_expression()
-        box_enabled = "1" if self.subtitle_background.get() == "Sim" else "0"
-        box_color = self._ffmpeg_color(self.subtitle_background_color.get(), "0x000000")
-        outline_color = self._ffmpeg_color(self.subtitle_outline_color.get(), "0x000000")
-        drawtext = (
-            "drawtext="
-            f"font='{font}':"
-            f"text='{text}':"
-            f"fontcolor={font_color}:"
-            f"fontsize={font_size}:"
-            f"box={box_enabled}:"
-            f"boxcolor={box_color}@0.70:"
-            "boxborderw=24:"
-            "borderw=3:"
-            f"bordercolor={outline_color}:"
-            "line_spacing=12:"
-            "fix_bounds=1:"
-            "x=max(20\\,(w-text_w)/2):"
-            f"y={y_expr}"
+        wrapped_text, font_size, line_spacing, box_border = self._subtitle_layout(subtitle_text)
+        if subtitle_file is None:
+            subtitle_file = Path(tempfile.gettempdir()) / "videogenerator_subtitle.ass"
+        self._write_progressive_subtitle_file(
+            subtitle_file,
+            subtitle_text,
+            max(clip_duration, speech_duration, 0.1),
+            max(min(speech_duration, clip_duration or speech_duration), 0.1),
+            font_size,
+            line_spacing,
+            box_border,
         )
-        return f"{base_filter},{drawtext}"
+        subtitle_path = self._escape_filter_file_path(subtitle_file)
+        return f"{base_filter},subtitles='{subtitle_path}'"
+
+    def _write_progressive_subtitle_file(
+        self,
+        subtitle_file: Path,
+        subtitle_text: str,
+        clip_duration: float,
+        speech_duration: float,
+        font_size: int,
+        line_spacing: int,
+        box_border: int,
+    ) -> None:
+        words = subtitle_text.split()
+        if not words:
+            subtitle_file.write_text("", encoding="utf-8")
+            return
+        font = self.subtitle_font.get().strip() or "Arial Black"
+        primary = self._ass_color(self.subtitle_color.get(), "#FFFFFF")
+        outline = self._ass_color(self.subtitle_outline_color.get(), "#000000")
+        back = self._ass_color(self.subtitle_background_color.get(), "#000000", alpha="70")
+        border_style = 3 if self.subtitle_background.get() == "Sim" else 1
+        outline_width = max(1, box_border if border_style == 3 else 3)
+        alignment = self._ass_alignment()
+        margin_v = self._ass_margin_v()
+        spacing = -max(0, int(font_size * 0.10) - line_spacing)
+        speech_duration = max(0.1, min(speech_duration, clip_duration))
+        word_duration = max(speech_duration / len(words), 0.04)
+        events: list[str] = []
+        for index in range(1, len(words) + 1):
+            start = (index - 1) * word_duration
+            end = index * word_duration if index < len(words) else clip_duration
+            if end <= start:
+                end = start + 0.05
+            visible_text = self._wrap_subtitle_text(" ".join(words[:index]), font_size).replace("\n", r"\N")
+            events.append(
+                f"Dialogue: 0,{self._ass_timestamp(start)},{self._ass_timestamp(end)},Default,,0,0,0,,{self._escape_ass_text(visible_text)}"
+            )
+        ass_text = "\n".join(
+            [
+                "[Script Info]",
+                "ScriptType: v4.00+",
+                "PlayResX: 1080",
+                "PlayResY: 1920",
+                "ScaledBorderAndShadow: yes",
+                "WrapStyle: 2",
+                "",
+                "[V4+ Styles]",
+                "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+                f"Style: Default,{font},{font_size},{primary},{primary},{outline},{back},-1,0,0,0,100,100,{spacing},0,{border_style},{outline_width},0,{alignment},80,80,{margin_v},1",
+                "",
+                "[Events]",
+                "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+                *events,
+                "",
+            ]
+        )
+        subtitle_file.write_text(ass_text, encoding="utf-8")
+
+    def _ass_alignment(self) -> int:
+        position = self.subtitle_position.get()
+        if position == "Topo":
+            return 8
+        if position == "Centro":
+            return 5
+        return 2
+
+    def _ass_margin_v(self) -> int:
+        position = self.subtitle_position.get()
+        if position == "Topo":
+            return 120
+        if position == "Centro":
+            return 0
+        return 240
+
+    @staticmethod
+    def _ass_timestamp(seconds: float) -> str:
+        safe_seconds = max(seconds, 0.0)
+        hours = int(safe_seconds // 3600)
+        minutes = int((safe_seconds % 3600) // 60)
+        whole_seconds = int(safe_seconds % 60)
+        centiseconds = int(round((safe_seconds - int(safe_seconds)) * 100))
+        if centiseconds >= 100:
+            whole_seconds += 1
+            centiseconds = 0
+        return f"{hours}:{minutes:02d}:{whole_seconds:02d}.{centiseconds:02d}"
+
+    @staticmethod
+    def _escape_ass_text(value: str) -> str:
+        return value.replace("{", "(").replace("}", ")")
+
+    def _ass_color(self, value: str, fallback: str, alpha: str = "00") -> str:
+        color = self._normalize_color(value, fallback)
+        red = color[1:3]
+        green = color[3:5]
+        blue = color[5:7]
+        return f"&H{alpha}{blue}{green}{red}"
+
 
     def _subtitle_y_expression(self) -> str:
         position = self.subtitle_position.get()
         if position == "Topo":
-            return "max(20\\,h*0.12)"
+            return "max(80\\,min(h*0.10\\,h-text_h-80))"
         if position == "Centro":
-            return "max(20\\,(h-text_h)/2)"
-        return "max(20\\,h-text_h-h*0.14)"
+            return "max(80\\,min((h-text_h)/2\\,h-text_h-80))"
+        return "max(80\\,min(h-text_h-h*0.14\\,h-text_h-80))"
+
+    def _subtitle_layout(self, value: str) -> tuple[str, int, int, int]:
+        requested_size = self._safe_int(self.subtitle_size.get(), 64, 1, 160)
+        position = self.subtitle_position.get()
+        max_text_height = 1100 if position == "Centro" else 520
+        max_text_height = min(max_text_height, 1920 - 160)
+        for font_size in range(requested_size, 23, -2):
+            wrapped = self._wrap_subtitle_text(value, font_size)
+            line_count = max(1, wrapped.count("\n") + 1)
+            line_spacing = max(0, int(font_size * 0.025))
+            box_border = max(8, min(18, int(font_size * 0.24)))
+            estimated_height = line_count * font_size + max(0, line_count - 1) * line_spacing + box_border * 2 + 8
+            if estimated_height <= max_text_height:
+                return wrapped, font_size, line_spacing, box_border
+        font_size = 24
+        return self._wrap_subtitle_text(value, font_size), font_size, 0, 8
 
     @staticmethod
     def _wrap_subtitle_text(value: str, font_size: int) -> str:
-        words = value.split()
-        if not words:
+        text = " ".join(value.split())
+        if not text:
             return value
-        max_chars = max(14, min(34, int(1080 / max(font_size * 0.62, 1))))
+        max_chars = max(20, min(48, int(980 / max(font_size * 0.48, 1))))
         lines: list[str] = []
         current = ""
-        for word in words:
+        for word in text.split(" "):
             candidate = f"{current} {word}".strip()
             if current and len(candidate) > max_chars:
                 lines.append(current)
@@ -1526,6 +2066,14 @@ class VideoGeneratorApp:
     @staticmethod
     def _escape_drawtext(value: str) -> str:
         return value.replace("\\", "\\\\").replace("\n", "\\n").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
+
+    @staticmethod
+    def _escape_drawtext_file_path(value: Path) -> str:
+        return value.resolve().as_posix().replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+
+    @staticmethod
+    def _escape_filter_file_path(value: Path) -> str:
+        return value.resolve().as_posix().replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
     @staticmethod
     def _ffmpeg_color(value: str, fallback: str) -> str:
@@ -1577,7 +2125,7 @@ class VideoGeneratorApp:
             filter_parts: list[str] = []
             concat_inputs = ""
             for index in range(len(clips)):
-                filter_parts.append(f"[{index}:v:0]setpts=PTS-STARTPTS[v{index}]")
+                filter_parts.append(f"[{index}:v:0]setpts=PTS-STARTPTS,scale={VIDEO_SIZE},setsar=1,fps={FPS},format=yuv420p[v{index}]")
                 filter_parts.append(f"[{index}:a:0]asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0[a{index}]")
                 concat_inputs += f"[v{index}][a{index}]"
             filter_complex = ";".join(filter_parts) + f";{concat_inputs}concat=n={len(clips)}:v=1:a=1[v][a]"
@@ -1641,6 +2189,15 @@ class VideoGeneratorApp:
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if result.returncode != 0:
             raise RuntimeError(result.stderr[-2000:] or "FFmpeg falhou sem mensagem de erro.")
+
+    def _media_duration(self, ffmpeg: str, media_path: Path) -> float:
+        result = subprocess.run([ffmpeg, "-hide_banner", "-i", str(media_path)], capture_output=True, text=True, check=False)
+        output = result.stderr + "\n" + result.stdout
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", output)
+        if not match:
+            return 0.0
+        hours, minutes, seconds = match.groups()
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
     @staticmethod
     def _audio_duration(audio_path: Path) -> float:
