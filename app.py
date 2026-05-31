@@ -22,7 +22,7 @@ from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Button, Canvas, Entry, Frame, 
 
 import imageio_ffmpeg
 import numpy as np
-from PIL import Image, ImageTk
+from PIL import Image, ImageGrab, ImageTk
 import pyautogui
 import pyperclip
 import requests
@@ -34,6 +34,9 @@ VIDEO_SIZE = "1080:1920"
 FPS = "30"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 DEFAULT_SCRIPT_TEXT = "Hoje vamos falar sobre a China.\nEsse país é incrível.\nVamos te provar."
+CLIPBOARD_MEDIA_DIR = Path.home() / ".videogenerator_media"
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+LOCAL_MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
 
 
 @dataclass
@@ -734,6 +737,7 @@ class VideoGeneratorApp:
             Label(preview, text="Preview\nPexels", bg="#eef1f8", fg="#8b95a7", justify="center", font=("Segoe UI", 8, "bold")).pack(fill=BOTH, expand=True)
             return preview
 
+        # O preview usa a mesma área para links do Pexels e imagens coladas da área de transferência.
         image = self._load_media_preview(clean_url)
         if image:
             Label(preview, image=image, bg="#eef1f8").pack(fill=BOTH, expand=True)
@@ -748,6 +752,14 @@ class VideoGeneratorApp:
         if media_url in self.media_preview_images:
             return self.media_preview_images[media_url]
         image_bytes = self.media_preview_bytes.get(media_url)
+        local_path = self._local_media_path(media_url)
+        if not image_bytes and local_path and local_path.suffix.lower() in IMAGE_EXTENSIONS:
+            try:
+                # Imagens locais/coladas já estão no disco; ler direto evita uma chamada HTTP desnecessária.
+                image_bytes = local_path.read_bytes()
+                self.media_preview_bytes[media_url] = image_bytes
+            except OSError:
+                image_bytes = None
         if not image_bytes:
             return None
         try:
@@ -761,6 +773,10 @@ class VideoGeneratorApp:
             return None
 
     def _start_media_preview_load(self, media_url: str) -> None:
+        local_path = self._local_media_path(media_url)
+        if local_path:
+            self.media_preview_failed.add(media_url)
+            return
         if media_url in self.media_preview_loading or media_url in self.media_preview_failed:
             return
         self.media_preview_loading.add(media_url)
@@ -793,7 +809,7 @@ class VideoGeneratorApp:
     def _media_preview_url(self, media_url: str, api_key: str | None = None) -> str:
         parsed = urllib.parse.urlparse(media_url)
         suffix = Path(parsed.path).suffix.lower()
-        if suffix in {".jpg", ".jpeg", ".png", ".webp"}:
+        if suffix in IMAGE_EXTENSIONS:
             return media_url
         if "pexels.com" not in parsed.netloc:
             return ""
@@ -834,10 +850,79 @@ class VideoGeneratorApp:
                 return html.unescape(content_match.group(1))
         return ""
 
+    @staticmethod
+    def _local_media_path(media_url: str) -> Path | None:
+        clean_url = media_url.strip()
+        if not clean_url:
+            return None
+        parsed = urllib.parse.urlparse(clean_url)
+        if parsed.scheme == "file":
+            path = Path(urllib.parse.unquote(parsed.path))
+        elif parsed.scheme and len(parsed.scheme) == 1:
+            # No Windows, caminhos como C:\foto.png podem ser interpretados como scheme pelo urlparse.
+            path = Path(clean_url).expanduser()
+        elif parsed.scheme:
+            return None
+        else:
+            path = Path(clean_url).expanduser()
+        if path.exists() and path.suffix.lower() in LOCAL_MEDIA_EXTENSIONS:
+            return path
+        return None
+
+    @staticmethod
+    def _image_to_png_bytes(image: Image.Image) -> bytes:
+        output = BytesIO()
+        # PNG preserva bem imagens copiadas sem depender do formato original da área de transferência.
+        image.save(output, format="PNG")
+        return output.getvalue()
+
+    @classmethod
+    def _clipboard_image_bytes_from_value(cls, clipboard_value: Any) -> bytes | None:
+        if isinstance(clipboard_value, Image.Image):
+            return cls._image_to_png_bytes(clipboard_value)
+        if isinstance(clipboard_value, (list, tuple)):
+            for item in clipboard_value:
+                local_path = cls._local_media_path(str(item))
+                if local_path and local_path.suffix.lower() in IMAGE_EXTENSIONS:
+                    with Image.open(local_path) as image:
+                        return cls._image_to_png_bytes(image.convert("RGBA"))
+        return None
+
+    def _clipboard_image_bytes(self) -> bytes | None:
+        try:
+            # ImageGrab.grabclipboard lê imagens reais no clipboard (não apenas texto como pyperclip).
+            clipboard_value = ImageGrab.grabclipboard()
+        except Exception:
+            return None
+        return self._clipboard_image_bytes_from_value(clipboard_value)
+
+    def _save_clipboard_image(self, image_bytes: bytes, index: int) -> str:
+        CLIPBOARD_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+        filename = f"frase_{index + 1:03d}_{int(time.time() * 1000)}.png"
+        output_path = CLIPBOARD_MEDIA_DIR / filename
+        output_path.write_bytes(image_bytes)
+        return str(output_path)
+
     def _paste_line_link(self, index: int) -> None:
-        link = pyperclip.paste().strip()
+        image_bytes = self._clipboard_image_bytes()
+        if image_bytes:
+            media_path = self._save_clipboard_image(image_bytes, index)
+            self.used_media_urls.add(media_path)
+            self.lines[index].media_url = media_path
+            self.media_preview_bytes[media_path] = image_bytes
+            self.media_preview_images.pop(media_path, None)
+            self.media_preview_failed.discard(media_path)
+            self._render_lines()
+            self._save_config(show_status=False)
+            self.status_text.set(f"Imagem colada na frase {index + 1}.")
+            return
+
+        try:
+            link = pyperclip.paste().strip()
+        except Exception:
+            link = ""
         if not link:
-            messagebox.showerror(APP_TITLE, "A área de transferência está vazia. Copie um link do Pexels e clique em Colar link.")
+            messagebox.showerror(APP_TITLE, "A área de transferência está vazia. Copie um link do Pexels ou uma imagem e clique em Colar link.")
             return
         self.used_media_urls.add(link)
         self.lines[index].media_url = link
@@ -1732,6 +1817,10 @@ class VideoGeneratorApp:
             self.used_media_urls.add(media_url)
             self.lines[index - 1].media_url = media_url
             self.root.after(0, self._render_lines)
+        local_path = self._local_media_path(media_url)
+        if local_path:
+            # Imagens coladas ficam salvas localmente e podem entrar direto no FFmpeg.
+            return local_path
         media_url = self._resolve_pexels_page_url(media_url)
         parsed = urllib.parse.urlparse(media_url)
         suffix = Path(parsed.path).suffix or ".mp4"
