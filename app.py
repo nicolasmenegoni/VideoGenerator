@@ -1394,7 +1394,7 @@ class VideoGeneratorApp:
         is_image = media_path.suffix.lower() in image_exts
         media_duration = 0.0 if is_image else self._media_duration(ffmpeg, media_path)
         duration = max(audio_duration, media_duration) if media_duration > 0 else audio_duration
-        video_filter = self._video_filter(subtitle_text)
+        video_filter = self._video_filter(subtitle_text, clip_path.with_suffix(".subtitle.txt"))
         filter_complex = (
             f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[v];"
             f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
@@ -1454,13 +1454,16 @@ class VideoGeneratorApp:
             )
         self._run_ffmpeg(cmd)
 
-    def _video_filter(self, subtitle_text: str) -> str:
+    def _video_filter(self, subtitle_text: str, subtitle_file: Path | None = None) -> str:
         base_filter = f"scale={VIDEO_SIZE}:force_original_aspect_ratio=increase,crop={VIDEO_SIZE},setsar=1,format=yuv420p"
         if self.subtitle_enabled.get() != "Sim":
             return base_filter
         font = self._escape_drawtext(self.subtitle_font.get().strip() or "Arial")
-        font_size = self._safe_int(self.subtitle_size.get(), 64, 1, 160)
-        text = self._escape_drawtext(self._wrap_subtitle_text(subtitle_text, font_size))
+        wrapped_text, font_size, line_spacing, box_border = self._subtitle_layout(subtitle_text)
+        if subtitle_file is None:
+            subtitle_file = Path(tempfile.gettempdir()) / "videogenerator_subtitle.txt"
+        subtitle_file.write_text(wrapped_text, encoding="utf-8")
+        textfile = self._escape_drawtext_file_path(subtitle_file)
         font_color = self._ffmpeg_color(self.subtitle_color.get(), "0xFFFFFF")
         y_expr = self._subtitle_y_expression()
         box_enabled = "1" if self.subtitle_background.get() == "Sim" else "0"
@@ -1469,17 +1472,17 @@ class VideoGeneratorApp:
         drawtext = (
             "drawtext="
             f"font='{font}':"
-            f"text='{text}':"
+            f"textfile='{textfile}':"
             f"fontcolor={font_color}:"
             f"fontsize={font_size}:"
             f"box={box_enabled}:"
             f"boxcolor={box_color}@0.70:"
-            "boxborderw=24:"
+            f"boxborderw={box_border}:"
             "borderw=3:"
             f"bordercolor={outline_color}:"
-            "line_spacing=12:"
+            f"line_spacing={line_spacing}:"
             "fix_bounds=1:"
-            "x=max(20\\,(w-text_w)/2):"
+            "x=max(80\\,min((w-text_w)/2\\,w-text_w-80)):"
             f"y={y_expr}"
         )
         return f"{base_filter},{drawtext}"
@@ -1487,20 +1490,36 @@ class VideoGeneratorApp:
     def _subtitle_y_expression(self) -> str:
         position = self.subtitle_position.get()
         if position == "Topo":
-            return "max(20\\,h*0.12)"
+            return "max(80\\,min(h*0.10\\,h-text_h-80))"
         if position == "Centro":
-            return "max(20\\,(h-text_h)/2)"
-        return "max(20\\,h-text_h-h*0.14)"
+            return "max(80\\,min((h-text_h)/2\\,h-text_h-80))"
+        return "max(80\\,min(h-text_h-h*0.14\\,h-text_h-80))"
+
+    def _subtitle_layout(self, value: str) -> tuple[str, int, int, int]:
+        requested_size = self._safe_int(self.subtitle_size.get(), 64, 1, 160)
+        position = self.subtitle_position.get()
+        max_text_height = 1100 if position == "Centro" else 520
+        max_text_height = min(max_text_height, 1920 - 160)
+        for font_size in range(requested_size, 23, -2):
+            wrapped = self._wrap_subtitle_text(value, font_size)
+            line_count = max(1, wrapped.count("\n") + 1)
+            line_spacing = max(6, int(font_size * 0.18))
+            box_border = max(10, min(24, int(font_size * 0.34)))
+            estimated_height = line_count * font_size + max(0, line_count - 1) * line_spacing + box_border * 2 + 8
+            if estimated_height <= max_text_height:
+                return wrapped, font_size, line_spacing, box_border
+        font_size = 24
+        return self._wrap_subtitle_text(value, font_size), font_size, 6, 10
 
     @staticmethod
     def _wrap_subtitle_text(value: str, font_size: int) -> str:
-        words = value.split()
-        if not words:
+        text = " ".join(value.split())
+        if not text:
             return value
-        max_chars = max(14, min(34, int(1080 / max(font_size * 0.62, 1))))
+        max_chars = max(18, min(42, int(900 / max(font_size * 0.52, 1))))
         lines: list[str] = []
         current = ""
-        for word in words:
+        for word in text.split(" "):
             candidate = f"{current} {word}".strip()
             if current and len(candidate) > max_chars:
                 lines.append(current)
@@ -1514,6 +1533,10 @@ class VideoGeneratorApp:
     @staticmethod
     def _escape_drawtext(value: str) -> str:
         return value.replace("\\", "\\\\").replace("\n", "\\n").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
+
+    @staticmethod
+    def _escape_drawtext_file_path(value: Path) -> str:
+        return value.resolve().as_posix().replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
     @staticmethod
     def _ffmpeg_color(value: str, fallback: str) -> str:
