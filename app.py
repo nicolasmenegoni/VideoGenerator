@@ -395,7 +395,8 @@ class VideoGeneratorApp:
         instructions = (
             "Fluxo usado: abrir o ChatGPT pelo atalho, capturar a janela, localizar automaticamente o campo de texto "
             "e o botão Enviar pela imagem, enviar 'Apenas repita isso com aspas: [frase]', esperar a resposta pelo tempo configurado, "
-            "procurar os 3 pontinhos abaixo da resposta completa, abrir o menu, identificar a área nova e clicar em 'Ler em voz alta'."
+            "procurar os 3 pontinhos novos da última resposta (horizontal ou vertical), abrir o menu, "
+            "identificar a área nova e clicar em 'Ler em voz alta'."
         )
         Label(content, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
 
@@ -403,7 +404,7 @@ class VideoGeneratorApp:
         shortcut_card.pack(fill=X, pady=(0, 12))
         self._entry_row(shortcut_card, "Atalho para abrir o ChatGPT", self.chatgpt_shortcut, "Padrão: alt+c. Separe teclas com +, por exemplo: ctrl+shift+g.")
         self._entry_row(shortcut_card, "Esperar antes de capturar/enviar (segundos)", self.chatgpt_send_wait, "Tempo para o app do ChatGPT abrir antes da captura automática da janela.")
-        self._entry_row(shortcut_card, "Tempo de espera da resposta (segundos)", self.chatgpt_response_wait, "Padrão: 8 segundos antes de procurar os 3 pontinhos da resposta.")
+        self._entry_row(shortcut_card, "Tempo de espera da resposta (segundos)", self.chatgpt_response_wait, "Padrão: 8 segundos antes de procurar os 3 pontinhos novos da última resposta.")
         self._entry_row(shortcut_card, "Esperar após 3 pontinhos (segundos)", self.chatgpt_menu_wait, "Padrão: 1 segundo antes de capturar o menu e clicar em Ler em voz alta.")
 
         auto_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
@@ -414,7 +415,7 @@ class VideoGeneratorApp:
             text=(
                 "Não é mais necessário informar coordenadas. Deixe o app do ChatGPT visível em tema escuro: "
                 "o VideoGenerator captura a janela ativa, encontra o campo de mensagem, o botão Enviar, "
-                "os 3 pontinhos da resposta e a opção Ler em voz alta automaticamente."
+                "os 3 pontinhos novos da última resposta e a opção Ler em voz alta automaticamente."
             ),
             bg="#f8f9fd",
             fg="#657084",
@@ -811,10 +812,10 @@ class VideoGeneratorApp:
         record_duration = self._estimated_tts_duration(text)
         min_rms = 0.0001
 
-        rms = self._play_read_aloud_and_record(response_capture, menu_point, output_path, record_duration, preserve_unknown_sessions=False)
+        rms = self._play_read_aloud_and_record(response_capture, menu_point, output_path, record_duration, preserve_unknown_sessions=True)
         if rms < min_rms:
-            self.message_queue.put(("status", "Áudio ficou silencioso; tentando gravar novamente preservando sessões desconhecidas do ChatGPT..."))
-            rms = self._play_read_aloud_and_record(response_capture, menu_point, output_path, record_duration, preserve_unknown_sessions=True)
+            self.message_queue.put(("status", "Áudio ficou silencioso; tentando gravar novamente sem silenciar sessões desconhecidas..."))
+            rms = self._play_read_aloud_and_record(response_capture, menu_point, output_path, record_duration, preserve_unknown_sessions=False)
         if rms < min_rms:
             self.message_queue.put((
                 "status",
@@ -945,10 +946,35 @@ class VideoGeneratorApp:
         return ScreenPoint(composer.right - 36, composer.top + composer.height // 2)
 
     def _wait_for_response_more_button(self, before_capture: WindowCapture, timeout: float) -> tuple[WindowCapture, ScreenPoint]:
-        del before_capture
-        time.sleep(max(timeout, 1.0))
-        capture = self._capture_chatgpt_window()
-        return capture, self._find_response_more_button(capture.image)
+        before_candidates = self._response_more_candidates(before_capture.image)
+        deadline = time.monotonic() + max(timeout, 1.0)
+        capture = before_capture
+        after_candidates: list[ScreenPoint] = []
+        best_candidate: ScreenPoint | None = None
+
+        while time.monotonic() < deadline:
+            time.sleep(0.5)
+            capture = self._capture_chatgpt_window()
+            after_candidates = self._response_more_candidates(capture.image)
+            best_candidate = self._best_new_more_candidate(before_candidates, after_candidates)
+            if best_candidate is not None:
+                return capture, best_candidate
+
+        settle_deadline = time.monotonic() + 3.0
+        while time.monotonic() < settle_deadline:
+            capture = self._capture_chatgpt_window()
+            after_candidates = self._response_more_candidates(capture.image)
+            best_candidate = (
+                self._best_new_more_candidate(before_candidates, after_candidates)
+                or self._best_changed_more_candidate(before_capture.image, capture.image, after_candidates)
+            )
+            if best_candidate is not None:
+                return capture, best_candidate
+            time.sleep(0.35)
+
+        if after_candidates:
+            return capture, self._select_response_more_candidate(capture.image, after_candidates)
+        raise RuntimeError("Não consegui localizar os 3 pontinhos da resposta do ChatGPT na captura da janela.")
 
     def _find_response_more_button(self, image: Any) -> ScreenPoint:
         candidates = self._response_more_candidates(image)
@@ -985,18 +1011,31 @@ class VideoGeneratorApp:
         ]
         centers = [component.center for component in tiny]
         candidates: list[ScreenPoint] = []
+
+        def add_candidate(candidate: ScreenPoint) -> None:
+            if not any(abs(candidate.x - existing.x) <= 3 and abs(candidate.y - existing.y) <= 3 for existing in candidates):
+                candidates.append(candidate)
+
         for first in centers:
-            neighbors = [point for point in centers if abs(point.y - first.y) <= 5 and 4 <= point.x - first.x <= 30]
-            for second in neighbors:
+            horizontal_neighbors = [point for point in centers if abs(point.y - first.y) <= 5 and 4 <= point.x - first.x <= 30]
+            for second in horizontal_neighbors:
                 third_options = [point for point in centers if abs(point.y - first.y) <= 5 and 4 <= point.x - second.x <= 30]
                 for third in third_options:
                     span = third.x - first.x
                     first_gap = second.x - first.x
                     second_gap = third.x - second.x
                     if 10 <= span <= 44 and max(first_gap, second_gap) <= min(first_gap, second_gap) * 2.2:
-                        candidate = ScreenPoint((first.x + third.x) // 2, int(round((first.y + second.y + third.y) / 3)))
-                        if not any(abs(candidate.x - existing.x) <= 3 and abs(candidate.y - existing.y) <= 3 for existing in candidates):
-                            candidates.append(candidate)
+                        add_candidate(ScreenPoint((first.x + third.x) // 2, int(round((first.y + second.y + third.y) / 3))))
+
+            vertical_neighbors = [point for point in centers if abs(point.x - first.x) <= 5 and 4 <= point.y - first.y <= 30]
+            for second in vertical_neighbors:
+                third_options = [point for point in centers if abs(point.x - first.x) <= 5 and 4 <= point.y - second.y <= 30]
+                for third in third_options:
+                    span = third.y - first.y
+                    first_gap = second.y - first.y
+                    second_gap = third.y - second.y
+                    if 10 <= span <= 44 and max(first_gap, second_gap) <= min(first_gap, second_gap) * 2.2:
+                        add_candidate(ScreenPoint(int(round((first.x + second.x + third.x) / 3)), (first.y + third.y) // 2))
         return candidates
 
     def _select_response_more_candidate(self, image: Any, candidates: list[ScreenPoint]) -> ScreenPoint:
