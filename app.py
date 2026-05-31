@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import urllib.parse
+import warnings
 import wave
 from io import BytesIO
 from contextlib import contextmanager
@@ -804,16 +805,18 @@ class VideoGeneratorApp:
         response_capture, local_menu_point = self._wait_for_response_more_button(typed_capture, wait_seconds)
         menu_point = self._to_screen(response_capture, local_menu_point)
         record_duration = self._estimated_tts_duration(text)
-        min_rms = 0.002
+        min_rms = 0.0001
 
         rms = self._play_read_aloud_and_record(response_capture, menu_point, output_path, record_duration, preserve_unknown_sessions=False)
         if rms < min_rms:
             self.message_queue.put(("status", "Áudio ficou silencioso; tentando gravar novamente preservando sessões desconhecidas do ChatGPT..."))
             rms = self._play_read_aloud_and_record(response_capture, menu_point, output_path, record_duration, preserve_unknown_sessions=True)
         if rms < min_rms:
-            raise RuntimeError(
-                "A gravação do ChatGPT ficou silenciosa. Confira se o botão 'Ler em voz alta' iniciou a fala e se a saída de áudio do Windows está ativa."
-            )
+            self.message_queue.put((
+                "status",
+                "A gravação ficou muito baixa, mas o áudio foi mantido para não interromper a geração. "
+                "Se a frase sair muda, aumente o volume do ChatGPT/Windows e tente novamente.",
+            ))
 
     def _play_read_aloud_and_record(
         self,
@@ -1163,7 +1166,8 @@ class VideoGeneratorApp:
         chunk_seconds = 0.25
         chunk_frames = int(sample_rate * chunk_seconds)
         silence_limit = 1.25
-        silence_threshold = 0.01
+        silence_threshold = 0.003
+        minimum_record_seconds = min(max(duration * 0.45, 3.0), duration)
         chunks: list[np.ndarray] = []
         speech_started = False
         silent_time = 0.0
@@ -1171,27 +1175,31 @@ class VideoGeneratorApp:
 
         speaker = sc.default_speaker()
         microphone = sc.get_microphone(id=str(speaker.name), include_loopback=True)
-        with microphone.recorder(samplerate=sample_rate) as recorder:
-            if on_ready is not None:
-                on_ready()
-            while elapsed < duration:
-                chunk = recorder.record(numframes=chunk_frames)
-                chunks.append(chunk)
-                mono_chunk = chunk.mean(axis=1) if chunk.ndim > 1 else chunk
-                level = float(np.sqrt(np.mean(np.square(mono_chunk)))) if mono_chunk.size else 0.0
-                if level > silence_threshold:
-                    speech_started = True
-                    silent_time = 0.0
-                elif speech_started:
-                    silent_time += chunk_seconds
-                elapsed += chunk_seconds
-                if speech_started and elapsed > 1.0 and silent_time >= silence_limit:
-                    break
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="data discontinuity in recording.*")
+            with microphone.recorder(samplerate=sample_rate) as recorder:
+                if on_ready is not None:
+                    on_ready()
+                while elapsed < duration:
+                    chunk = recorder.record(numframes=chunk_frames)
+                    chunks.append(chunk)
+                    mono_chunk = chunk.mean(axis=1) if chunk.ndim > 1 else chunk
+                    level = float(np.sqrt(np.mean(np.square(mono_chunk)))) if mono_chunk.size else 0.0
+                    if level > silence_threshold:
+                        speech_started = True
+                        silent_time = 0.0
+                    elif speech_started:
+                        silent_time += chunk_seconds
+                    elapsed += chunk_seconds
+                    if speech_started and elapsed >= minimum_record_seconds and silent_time >= silence_limit:
+                        break
 
         audio = np.concatenate(chunks) if chunks else np.zeros(int(sample_rate * 0.5), dtype=np.float32)
         if audio.ndim > 1:
             audio = audio.mean(axis=1)
-        audio = self._trim_silence(audio)
+        audio = self._trim_silence(audio, threshold=silence_threshold)
+        validation_level = self._audio_validation_level(audio)
+        audio = self._normalize_recorded_audio(audio)
         audio = np.clip(audio, -1.0, 1.0)
         pcm = (audio * 32767).astype(np.int16)
         with wave.open(str(output_path), "wb") as wav_file:
@@ -1199,7 +1207,28 @@ class VideoGeneratorApp:
             wav_file.setsampwidth(2)
             wav_file.setframerate(sample_rate)
             wav_file.writeframes(pcm.tobytes())
-        return float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+        return validation_level
+
+    @staticmethod
+    def _audio_validation_level(audio: np.ndarray) -> float:
+        if audio.size == 0:
+            return 0.0
+        rms = float(np.sqrt(np.mean(np.square(audio))))
+        peak = float(np.max(np.abs(audio)))
+        return max(rms, peak * 0.1)
+
+    @staticmethod
+    def _normalize_recorded_audio(audio: np.ndarray, target_rms: float = 0.08, max_gain: float = 20.0) -> np.ndarray:
+        if audio.size == 0:
+            return audio
+        rms = float(np.sqrt(np.mean(np.square(audio))))
+        peak = float(np.max(np.abs(audio)))
+        if rms <= 0.0 or peak <= 0.0001:
+            return audio
+        gain = min(max(target_rms / rms, 1.0), max_gain)
+        if peak * gain > 0.95:
+            gain = 0.95 / peak
+        return audio * max(gain, 1.0)
 
     def _estimated_tts_duration(self, text: str) -> float:
         extra = self._safe_float(self.chatgpt_record_extra.get(), 2.0, 0.0, 30.0)
