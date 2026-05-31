@@ -805,12 +805,14 @@ class VideoGeneratorApp:
         typed_composer = self._find_chatgpt_composer(typed_capture.image)
         send_point = self._to_screen(typed_capture, self._find_chatgpt_send_button(typed_capture.image, typed_composer))
         pyautogui.click(send_point.x, send_point.y)
+        time.sleep(0.75)
+        sent_capture = self._capture_chatgpt_window()
 
         wait_seconds = self._safe_float(self.chatgpt_response_wait.get(), 8.0, 1.0, 120.0)
-        response_capture, local_menu_point = self._wait_for_response_more_button(typed_capture, wait_seconds)
+        response_capture, local_menu_point = self._wait_for_response_more_button(sent_capture, wait_seconds)
         menu_point = self._to_screen(response_capture, local_menu_point)
         record_duration = self._estimated_tts_duration(text)
-        min_rms = 0.0001
+        min_rms = 0.00003
 
         rms = self._play_read_aloud_and_record(response_capture, menu_point, output_path, record_duration, preserve_unknown_sessions=True)
         if rms < min_rms:
@@ -970,9 +972,10 @@ class VideoGeneratorApp:
             if best_candidate is not None:
                 return capture, best_candidate
 
-        if after_candidates:
-            return capture, self._select_response_more_candidate(capture.image, after_candidates)
-        raise RuntimeError("Não consegui localizar os 3 pontinhos da resposta do ChatGPT na captura da janela.")
+        raise RuntimeError(
+            "Não consegui localizar os 3 pontinhos novos da resposta do ChatGPT depois da espera configurada. "
+            "Aumente o tempo de espera da resposta na aba Audio se o ChatGPT ainda estiver escrevendo."
+        )
 
     def _find_response_more_button(self, image: Any) -> ScreenPoint:
         candidates = self._response_more_candidates(image)
@@ -1262,8 +1265,7 @@ class VideoGeneratorApp:
         def consume_chunk(chunk: np.ndarray) -> bool:
             nonlocal speech_started, silent_time, elapsed
             chunks.append(chunk)
-            mono_chunk = chunk.mean(axis=1) if chunk.ndim > 1 else chunk
-            level = float(np.sqrt(np.mean(np.square(mono_chunk)))) if mono_chunk.size else 0.0
+            level = self._audio_level(chunk)
             if level > silence_threshold:
                 speech_started = True
                 silent_time = 0.0
@@ -1310,8 +1312,7 @@ class VideoGeneratorApp:
                             break
 
         audio = np.concatenate(chunks) if chunks else np.zeros(int(sample_rate * 0.5), dtype=np.float32)
-        if audio.ndim > 1:
-            audio = audio.mean(axis=1)
+        audio = self._best_mono_audio(audio)
         audio = self._trim_silence(audio, threshold=silence_threshold)
         validation_level = self._audio_validation_level(audio)
         audio = self._normalize_recorded_audio(audio)
@@ -1323,6 +1324,23 @@ class VideoGeneratorApp:
             wav_file.setframerate(sample_rate)
             wav_file.writeframes(pcm.tobytes())
         return validation_level
+
+    @staticmethod
+    def _best_mono_audio(audio: np.ndarray) -> np.ndarray:
+        if audio.ndim <= 1:
+            return audio
+        channel_rms = np.sqrt(np.mean(np.square(audio), axis=0))
+        strongest_channel = int(np.argmax(channel_rms))
+        return audio[:, strongest_channel]
+
+    @staticmethod
+    def _audio_level(audio: np.ndarray) -> float:
+        if audio.size == 0:
+            return 0.0
+        if audio.ndim <= 1:
+            return float(np.sqrt(np.mean(np.square(audio))))
+        channel_rms = np.sqrt(np.mean(np.square(audio), axis=0))
+        return float(np.max(channel_rms))
 
     @staticmethod
     def _audio_validation_level(audio: np.ndarray) -> float:
