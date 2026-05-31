@@ -1082,6 +1082,8 @@ class VideoGeneratorApp:
         for session in audio_utilities.GetAllSessions():
             process = getattr(session, "Process", None)
             process_name = process.name().lower() if process else ""
+            if not process_name:
+                continue
             if self._is_chatgpt_process(process_name):
                 self._remember_chatgpt_audio_process(process_name)
                 continue
