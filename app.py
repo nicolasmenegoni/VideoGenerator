@@ -803,16 +803,34 @@ class VideoGeneratorApp:
         wait_seconds = self._safe_float(self.chatgpt_response_wait.get(), 8.0, 1.0, 120.0)
         response_capture, local_menu_point = self._wait_for_response_more_button(typed_capture, wait_seconds)
         menu_point = self._to_screen(response_capture, local_menu_point)
+        record_duration = self._estimated_tts_duration(text)
+        min_rms = 0.002
+
+        rms = self._play_read_aloud_and_record(response_capture, menu_point, output_path, record_duration, preserve_unknown_sessions=False)
+        if rms < min_rms:
+            self.message_queue.put(("status", "Áudio ficou silencioso; tentando gravar novamente preservando sessões desconhecidas do ChatGPT..."))
+            rms = self._play_read_aloud_and_record(response_capture, menu_point, output_path, record_duration, preserve_unknown_sessions=True)
+        if rms < min_rms:
+            raise RuntimeError(
+                "A gravação do ChatGPT ficou silenciosa. Confira se o botão 'Ler em voz alta' iniciou a fala e se a saída de áudio do Windows está ativa."
+            )
+
+    def _play_read_aloud_and_record(
+        self,
+        response_capture: WindowCapture,
+        menu_point: ScreenPoint,
+        output_path: Path,
+        record_duration: float,
+        preserve_unknown_sessions: bool,
+    ) -> float:
         pyautogui.click(menu_point.x, menu_point.y)
         time.sleep(self._safe_float(self.chatgpt_menu_wait.get(), 1.0, 0.2, 10.0))
-
         menu_capture = self._capture_chatgpt_window()
         read_point = self._to_screen(menu_capture, self._find_read_aloud_point(response_capture.image, menu_capture.image, menu_point, menu_capture))
-        record_duration = self._estimated_tts_duration(text)
-        with self._chatgpt_audio_only():
+        with self._chatgpt_audio_only(preserve_unknown_sessions=preserve_unknown_sessions):
             pyautogui.click(read_point.x, read_point.y)
-            time.sleep(0.1)
-            self._record_system_audio(output_path, record_duration)
+            time.sleep(0.25)
+            return self._record_system_audio(output_path, record_duration)
 
     def _capture_chatgpt_window(self) -> WindowCapture:
         window = None
@@ -1071,7 +1089,7 @@ class VideoGeneratorApp:
         return components
 
     @contextmanager
-    def _chatgpt_audio_only(self):
+    def _chatgpt_audio_only(self, preserve_unknown_sessions: bool = False):
         restored_sessions: list[tuple[Any, int, float]] = []
         if sys.platform != "win32":
             yield
@@ -1086,6 +1104,10 @@ class VideoGeneratorApp:
             process_id = getattr(process, "pid", None) if process else None
             process_name = process.name().lower() if process else ""
             volume = session._ctl.QueryInterface(simple_audio_volume)
+            if preserve_unknown_sessions and not process_name:
+                if volume.GetMute():
+                    volume.SetMute(0, None)
+                continue
             if self._is_chatgpt_audio_session(process_name, process_id, chatgpt_pid):
                 self._remember_chatgpt_audio_process(process_name)
                 if volume.GetMute():
@@ -1134,7 +1156,7 @@ class VideoGeneratorApp:
         if normalized:
             self.chatgpt_audio_process_names.add(normalized)
 
-    def _record_system_audio(self, output_path: Path, duration: float) -> None:
+    def _record_system_audio(self, output_path: Path, duration: float) -> float:
         sample_rate = 48000
         chunk_seconds = 0.25
         chunk_frames = int(sample_rate * chunk_seconds)
@@ -1173,6 +1195,7 @@ class VideoGeneratorApp:
             wav_file.setsampwidth(2)
             wav_file.setframerate(sample_rate)
             wav_file.writeframes(pcm.tobytes())
+        return float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
 
     def _estimated_tts_duration(self, text: str) -> float:
         extra = self._safe_float(self.chatgpt_record_extra.get(), 2.0, 0.0, 30.0)
