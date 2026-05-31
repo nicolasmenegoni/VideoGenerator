@@ -242,6 +242,88 @@ class VideoGeneratorApp:
         actions = Frame(parent, bg="#ffffff", pady=12)
         actions.pack(fill=X)
         Button(actions, text="Atualizar roteiro", command=self._refresh_lines, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
+        Button(actions, text="Gerar roteiro", command=self._start_script_generation, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
+
+    def _start_script_generation(self) -> None:
+        title = self.video_title.get().strip()
+        if not title:
+            messagebox.showerror(APP_TITLE, "Informe um título na aba Roteiro para gerar o roteiro.")
+            return
+        if not self.groq_key.get().strip():
+            messagebox.showerror(APP_TITLE, "Informe a chave de API do Groq na aba APIs.")
+            self._show_tab("apis")
+            return
+        self._save_config(show_status=False)
+        self.progress.configure(value=0, maximum=1)
+        self.progress_text.set("Gerando roteiro...")
+        self.status_text.set("Gerando roteiro com Groq...")
+        threading.Thread(target=self._generate_script_worker, args=(title,), daemon=True).start()
+
+    def _generate_script_worker(self, title: str) -> None:
+        try:
+            lines = self._groq_script_lines(title)
+            self.root.after(0, lambda: self._apply_generated_script(lines))
+            self.message_queue.put(("done", "Roteiro gerado com Groq e salvo no app."))
+        except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
+            self.message_queue.put(("error", str(exc)))
+
+    def _apply_generated_script(self, lines: list[str]) -> None:
+        script_text = "\n".join(lines)
+        self.script_text.delete("1.0", END)
+        self.script_text.insert("1.0", script_text)
+        self._refresh_lines()
+        self.progress.configure(value=1)
+
+    def _groq_script_lines(self, title: str) -> list[str]:
+        prompt = (
+            "Crie um roteiro curto para um vídeo vertical em português do Brasil com base no título informado. "
+            "O roteiro deve ter de 6 a 10 frases curtas, naturais para narração em voz alta, com gancho no começo e fechamento no final. "
+            "Cada frase deve funcionar como uma cena separada do vídeo. "
+            "Não use numeração, marcadores, emojis, markdown, aspas ou título dentro das frases. "
+            "Responda somente JSON válido no formato {\"lines\":[...]} com cada frase como um item.\n\n"
+            f"Título: {title}"
+        )
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self.groq_key.get().strip()}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": GROQ_MODEL,
+                "messages": [
+                    {"role": "system", "content": "Você cria roteiros curtos para vídeos verticais em português do Brasil."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.7,
+                "max_completion_tokens": 900,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=45,
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", content, flags=re.DOTALL)
+            if not match:
+                raise RuntimeError("O Groq não retornou JSON com o roteiro.")
+            data = json.loads(match.group(0))
+        raw_lines = data.get("lines")
+        if not isinstance(raw_lines, list):
+            raise RuntimeError("O Groq não retornou a lista 'lines'.")
+        lines = [self._clean_script_line(line) for line in raw_lines]
+        lines = [line for line in lines if line]
+        if not lines:
+            raise RuntimeError("O Groq retornou um roteiro vazio.")
+        return lines
+
+    @staticmethod
+    def _clean_script_line(line: Any) -> str:
+        text = str(line).strip()
+        text = re.sub(r"^[-•*\d.)\s]+", "", text).strip()
+        return " ".join(text.split())
 
     def _build_video_tab(self, parent: Frame) -> None:
         top = Frame(parent, bg="#ffffff")
