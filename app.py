@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import html
 import json
 import importlib
@@ -1076,19 +1077,22 @@ class VideoGeneratorApp:
             yield
             return
 
+        chatgpt_pid = self._active_window_process_id()
         pycaw_module = importlib.import_module("pycaw.pycaw")
         audio_utilities = pycaw_module.AudioUtilities
         simple_audio_volume = pycaw_module.ISimpleAudioVolume
         for session in audio_utilities.GetAllSessions():
             process = getattr(session, "Process", None)
+            process_id = getattr(process, "pid", None) if process else None
             process_name = process.name().lower() if process else ""
-            if not process_name:
-                continue
-            if self._is_chatgpt_process(process_name):
-                self._remember_chatgpt_audio_process(process_name)
-                continue
             volume = session._ctl.QueryInterface(simple_audio_volume)
+            if self._is_chatgpt_audio_session(process_name, process_id, chatgpt_pid):
+                self._remember_chatgpt_audio_process(process_name)
+                if volume.GetMute():
+                    volume.SetMute(0, None)
+                continue
             restored_sessions.append((volume, volume.GetMute(), volume.GetMasterVolume()))
+            volume.SetMasterVolume(0.0, None)
             volume.SetMute(1, None)
 
         try:
@@ -1097,6 +1101,29 @@ class VideoGeneratorApp:
             for volume, muted, master_volume in restored_sessions:
                 volume.SetMasterVolume(master_volume, None)
                 volume.SetMute(muted, None)
+
+    def _active_window_process_id(self) -> int | None:
+        if sys.platform != "win32":
+            return None
+        window_handle = None
+        try:
+            window = pyautogui.getActiveWindow() if hasattr(pyautogui, "getActiveWindow") else None
+            window_handle = getattr(window, "_hWnd", None) or getattr(window, "_hwnd", None) or getattr(window, "hWnd", None)
+        except Exception:
+            window_handle = None
+        if not window_handle:
+            return None
+        try:
+            process_id = ctypes.c_ulong()
+            ctypes.windll.user32.GetWindowThreadProcessId(int(window_handle), ctypes.byref(process_id))
+            return int(process_id.value) or None
+        except Exception:
+            return None
+
+    def _is_chatgpt_audio_session(self, process_name: str, process_id: int | None, chatgpt_pid: int | None) -> bool:
+        if chatgpt_pid is not None and process_id == chatgpt_pid:
+            return True
+        return self._is_chatgpt_process(process_name)
 
     def _is_chatgpt_process(self, process_name: str) -> bool:
         normalized = process_name.lower()
