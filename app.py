@@ -17,7 +17,7 @@ import wave
 from io import BytesIO
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Button, Canvas, Entry, Frame, Label, StringVar, Text, Tk, Toplevel, filedialog, messagebox, ttk
 
@@ -827,10 +827,12 @@ class VideoGeneratorApp:
         time.sleep(self._safe_float(self.chatgpt_menu_wait.get(), 1.0, 0.2, 10.0))
         menu_capture = self._capture_chatgpt_window()
         read_point = self._to_screen(menu_capture, self._find_read_aloud_point(response_capture.image, menu_capture.image, menu_point, menu_capture))
-        with self._chatgpt_audio_only(preserve_unknown_sessions=preserve_unknown_sessions):
+        def start_read_aloud() -> None:
             pyautogui.click(read_point.x, read_point.y)
-            time.sleep(0.25)
-            return self._record_system_audio(output_path, record_duration)
+            time.sleep(0.05)
+
+        with self._chatgpt_audio_only(preserve_unknown_sessions=preserve_unknown_sessions):
+            return self._record_system_audio(output_path, record_duration, on_ready=start_read_aloud)
 
     def _capture_chatgpt_window(self) -> WindowCapture:
         window = None
@@ -1156,7 +1158,7 @@ class VideoGeneratorApp:
         if normalized:
             self.chatgpt_audio_process_names.add(normalized)
 
-    def _record_system_audio(self, output_path: Path, duration: float) -> float:
+    def _record_system_audio(self, output_path: Path, duration: float, on_ready: Callable[[], None] | None = None) -> float:
         sample_rate = 48000
         chunk_seconds = 0.25
         chunk_frames = int(sample_rate * chunk_seconds)
@@ -1170,6 +1172,8 @@ class VideoGeneratorApp:
         speaker = sc.default_speaker()
         microphone = sc.get_microphone(id=str(speaker.name), include_loopback=True)
         with microphone.recorder(samplerate=sample_rate) as recorder:
+            if on_ready is not None:
+                on_ready()
             while elapsed < duration:
                 chunk = recorder.record(numframes=chunk_frames)
                 chunks.append(chunk)
