@@ -1449,7 +1449,7 @@ class VideoGeneratorApp:
         self._run_ffmpeg(cmd)
 
     def _video_filter(self, subtitle_text: str) -> str:
-        base_filter = f"scale={VIDEO_SIZE}:force_original_aspect_ratio=increase,crop={VIDEO_SIZE},format=yuv420p"
+        base_filter = f"scale={VIDEO_SIZE}:force_original_aspect_ratio=increase,crop={VIDEO_SIZE},setsar=1,format=yuv420p"
         if self.subtitle_enabled.get() != "Sim":
             return base_filter
         font = self._escape_drawtext(self.subtitle_font.get().strip() or "Arial")
@@ -1559,7 +1559,7 @@ class VideoGeneratorApp:
             filter_parts: list[str] = []
             concat_inputs = ""
             for index in range(len(clips)):
-                filter_parts.append(f"[{index}:v:0]setpts=PTS-STARTPTS[v{index}]")
+                filter_parts.append(f"[{index}:v:0]setpts=PTS-STARTPTS,scale={VIDEO_SIZE},setsar=1,fps={FPS},format=yuv420p[v{index}]")
                 filter_parts.append(f"[{index}:a:0]asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0[a{index}]")
                 concat_inputs += f"[v{index}][a{index}]"
             filter_complex = ";".join(filter_parts) + f";{concat_inputs}concat=n={len(clips)}:v=1:a=1[v][a]"
