@@ -95,7 +95,7 @@ class VideoGeneratorApp:
         self.subtitle_background = StringVar(value="Sim")
         self.subtitle_background_color = StringVar(value="#000000")
         self.subtitle_outline_color = StringVar(value="#000000")
-        self.subtitle_font = StringVar(value="Arial")
+        self.subtitle_font = StringVar(value="Arial Black")
         self.subtitle_preview_text = StringVar(value="Hoje vamos falar sobre a China.")
         self.chatgpt_shortcut = StringVar(value="alt+c")
         self.chatgpt_response_wait = StringVar(value="8")
@@ -716,6 +716,7 @@ class VideoGeneratorApp:
             buttons = Frame(row, bg="#ffffff")
             buttons.pack(side=RIGHT, padx=(12, 0))
             Button(buttons, text="Colar link", command=lambda idx=index: self._paste_line_link(idx), bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT)
+            Button(buttons, text="Gerar outro video", command=lambda idx=index: self._start_single_video_update(idx), bg="#eef1ff", fg="#27319f", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(8, 0))
             Button(buttons, text="Editar", command=lambda idx=index: self._edit_line_link(idx), bg="#eef1ff", fg="#27319f", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(8, 0))
 
     def _media_preview_widget(self, parent: Frame, media_url: str) -> Frame:
@@ -857,6 +858,67 @@ class VideoGeneratorApp:
             dialog.destroy()
 
         Button(dialog, text="Salvar link", command=save, bg="#5b6cff", fg="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(anchor="e", padx=20, pady=18)
+
+    def _start_single_video_update(self, index: int) -> None:
+        self._refresh_lines()
+        if index < 0 or index >= len(self.lines):
+            messagebox.showerror(APP_TITLE, "Não encontrei essa frase no roteiro sincronizado.")
+            return
+        if not self.pexels_key.get().strip():
+            messagebox.showerror(APP_TITLE, "Informe a chave de API do Pexels na aba APIs.")
+            self._show_tab("apis")
+            return
+        if not self.groq_key.get().strip():
+            messagebox.showerror(APP_TITLE, "Informe a chave de API do Groq na aba APIs.")
+            self._show_tab("apis")
+            return
+        self.progress.configure(value=0, maximum=1)
+        self.progress_text.set("Gerando outro video...")
+        self.status_text.set(f"Procurando outro video para a frase {index + 1}...")
+        threading.Thread(target=self._single_video_update_worker, args=(index,), daemon=True).start()
+
+    def _single_video_update_worker(self, index: int) -> None:
+        try:
+            line = self.lines[index]
+            query = self._groq_single_pexels_query(index)
+            media_url = self._search_pexels(query, exclude_urls={line.media_url})
+            self.lines[index].media_url = media_url
+            self.root.after(0, self._render_lines)
+            self.root.after(0, lambda: self._save_config(show_status=False))
+            self.message_queue.put(("step", f"Outro video aplicado na frase {index + 1}."))
+            self.message_queue.put(("done", f"Outro video encontrado para a frase {index + 1}."))
+        except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
+            self.message_queue.put(("error", str(exc)))
+
+    def _groq_single_pexels_query(self, index: int) -> str:
+        context = "\n".join(f"{line_index}. {line.text}" for line_index, line in enumerate(self.lines, start=1))
+        current_url = self.lines[index].media_url.strip() or "sem video atual"
+        prompt = (
+            "Crie uma nova pesquisa para encontrar um video vertical no Pexels para a frase indicada. "
+            "Use o contexto completo do roteiro, mas gere uma busca diferente da tentativa anterior. "
+            "A pesquisa deve estar em inglês, ter 2 a 6 palavras, ser visual e concreta. "
+            "Responda somente JSON válido no formato {\"query\":\"...\"}.\n\n"
+            f"Título do vídeo: {self.video_title.get().strip() or 'video'}\n"
+            f"Frase selecionada ({index + 1}): {self.lines[index].text}\n"
+            f"Video atual a evitar: {current_url}\n"
+            f"Roteiro completo:\n{context}"
+        )
+        content = self._groq_chat_content(
+            messages=[
+                {"role": "system", "content": "Você cria buscas curtas e variadas para vídeos de banco de imagem."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.55,
+            max_tokens=180,
+        )
+        try:
+            data = self._json_object_from_text(content)
+            query = str(data.get("query", "")).strip()
+        except json.JSONDecodeError:
+            query = self._clean_script_line(content.splitlines()[0] if content.splitlines() else content)
+        if not query:
+            raise RuntimeError("O Groq não retornou uma pesquisa para o novo video.")
+        return query
 
     def _start_video_update(self) -> None:
         self._refresh_lines()
@@ -1184,8 +1246,11 @@ class VideoGeneratorApp:
             if best_candidate is not None:
                 return capture, best_candidate
 
+        if after_candidates:
+            return capture, self._select_response_more_candidate(capture.image, after_candidates)
+
         raise RuntimeError(
-            "Não consegui localizar os 3 pontinhos novos da resposta do ChatGPT depois da espera configurada. "
+            "Não consegui localizar os 3 pontinhos da resposta do ChatGPT depois da espera configurada. "
             "Aumente o tempo de espera da resposta na aba Audio se o ChatGPT ainda estiver escrevendo."
         )
 
@@ -1200,10 +1265,10 @@ class VideoGeneratorApp:
         height, _, _ = array.shape
         channels_spread = array.max(axis=2) - array.min(axis=2)
         bright_mask = (
-            (array[:, :, 0] >= 185)
-            & (array[:, :, 1] >= 185)
-            & (array[:, :, 2] >= 185)
-            & (channels_spread <= 55)
+            (array[:, :, 0] >= 140)
+            & (array[:, :, 1] >= 140)
+            & (array[:, :, 2] >= 140)
+            & (channels_spread <= 70)
         )
         bright_mask[: int(height * 0.14), :] = False
         try:
@@ -1218,9 +1283,9 @@ class VideoGeneratorApp:
         tiny = [
             component
             for component in self._components(bright_mask, min_area=2)
-            if 1 <= component.width <= 12
-            and 1 <= component.height <= 12
-            and component.width * component.height <= 100
+            if 1 <= component.width <= 14
+            and 1 <= component.height <= 14
+            and component.width * component.height <= 130
         ]
         centers = [component.center for component in tiny]
         candidates: list[ScreenPoint] = []
@@ -1230,24 +1295,24 @@ class VideoGeneratorApp:
                 candidates.append(candidate)
 
         for first in centers:
-            horizontal_neighbors = [point for point in centers if abs(point.y - first.y) <= 5 and 4 <= point.x - first.x <= 30]
+            horizontal_neighbors = [point for point in centers if abs(point.y - first.y) <= 6 and 3 <= point.x - first.x <= 34]
             for second in horizontal_neighbors:
-                third_options = [point for point in centers if abs(point.y - first.y) <= 5 and 4 <= point.x - second.x <= 30]
+                third_options = [point for point in centers if abs(point.y - first.y) <= 6 and 3 <= point.x - second.x <= 34]
                 for third in third_options:
                     span = third.x - first.x
                     first_gap = second.x - first.x
                     second_gap = third.x - second.x
-                    if 10 <= span <= 44 and max(first_gap, second_gap) <= min(first_gap, second_gap) * 2.2:
+                    if 8 <= span <= 52 and max(first_gap, second_gap) <= min(first_gap, second_gap) * 2.6:
                         add_candidate(ScreenPoint((first.x + third.x) // 2, int(round((first.y + second.y + third.y) / 3))))
 
-            vertical_neighbors = [point for point in centers if abs(point.x - first.x) <= 5 and 4 <= point.y - first.y <= 30]
+            vertical_neighbors = [point for point in centers if abs(point.x - first.x) <= 6 and 3 <= point.y - first.y <= 34]
             for second in vertical_neighbors:
-                third_options = [point for point in centers if abs(point.x - first.x) <= 5 and 4 <= point.y - second.y <= 30]
+                third_options = [point for point in centers if abs(point.x - first.x) <= 6 and 3 <= point.y - second.y <= 34]
                 for third in third_options:
                     span = third.y - first.y
                     first_gap = second.y - first.y
                     second_gap = third.y - second.y
-                    if 10 <= span <= 44 and max(first_gap, second_gap) <= min(first_gap, second_gap) * 2.2:
+                    if 8 <= span <= 52 and max(first_gap, second_gap) <= min(first_gap, second_gap) * 2.6:
                         add_candidate(ScreenPoint(int(round((first.x + second.x + third.x) / 3)), (first.y + third.y) // 2))
         return candidates
 
@@ -1598,36 +1663,64 @@ class VideoGeneratorApp:
                 return src["large2x"]
         return media_url
 
-    def _search_pexels(self, query: str) -> str:
+    def _search_pexels(self, query: str, exclude_urls: set[str] | None = None) -> str:
         headers = {"Authorization": self.pexels_key.get().strip()}
+        excluded = {self._media_identity(url) for url in (exclude_urls or set()) if url.strip()}
+        first_candidate = ""
+
+        def remember_candidate(url: str) -> str | None:
+            nonlocal first_candidate
+            clean_url = url.strip()
+            if not clean_url:
+                return None
+            if not first_candidate:
+                first_candidate = clean_url
+            if self._media_identity(clean_url) not in excluded:
+                return clean_url
+            return None
+
         video_response = requests.get(
             "https://api.pexels.com/videos/search",
             headers=headers,
-            params={"query": query, "per_page": 1, "orientation": "portrait"},
+            params={"query": query, "per_page": 8, "orientation": "portrait"},
             timeout=30,
         )
         video_response.raise_for_status()
         videos = video_response.json().get("videos", [])
-        if videos:
-            video = videos[0]
-            if video.get("url"):
-                return video["url"]
+        for video in videos:
+            candidate = remember_candidate(str(video.get("url", "")))
+            if candidate:
+                return candidate
             files = video.get("video_files", [])
             portrait_files = sorted(files, key=lambda item: (item.get("width", 0) < item.get("height", 0), item.get("height", 0)), reverse=True)
-            if portrait_files:
-                return portrait_files[0]["link"]
+            for media_file in portrait_files:
+                candidate = remember_candidate(str(media_file.get("link", "")))
+                if candidate:
+                    return candidate
 
         photo_response = requests.get(
             "https://api.pexels.com/v1/search",
             headers=headers,
-            params={"query": query, "per_page": 1, "orientation": "portrait"},
+            params={"query": query, "per_page": 8, "orientation": "portrait"},
             timeout=30,
         )
         photo_response.raise_for_status()
         photos = photo_response.json().get("photos", [])
-        if photos:
-            return photos[0].get("url") or photos[0]["src"]["large2x"]
+        for photo in photos:
+            candidate = remember_candidate(str(photo.get("url", "") or photo.get("src", {}).get("large2x", "")))
+            if candidate:
+                return candidate
+        if first_candidate:
+            return first_candidate
         raise RuntimeError(f"Nenhuma mídia encontrada no Pexels para: {query}")
+
+    @staticmethod
+    def _media_identity(media_url: str) -> str:
+        parsed = urllib.parse.urlparse(media_url.strip())
+        match = re.search(r"(\d+)(?:/)?$", parsed.path)
+        if "pexels.com" in parsed.netloc and match:
+            return f"pexels:{match.group(1)}"
+        return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", "")).rstrip("/")
 
     def _create_clip(self, ffmpeg: str, media_path: Path, audio_path: Path, clip_path: Path, subtitle_text: str) -> None:
         audio_duration = self._audio_duration(audio_path)
@@ -1750,20 +1843,20 @@ class VideoGeneratorApp:
         for font_size in range(requested_size, 23, -2):
             wrapped = self._wrap_subtitle_text(value, font_size)
             line_count = max(1, wrapped.count("\n") + 1)
-            line_spacing = max(2, int(font_size * 0.06))
-            box_border = max(10, min(24, int(font_size * 0.34)))
+            line_spacing = max(0, int(font_size * 0.025))
+            box_border = max(8, min(18, int(font_size * 0.24)))
             estimated_height = line_count * font_size + max(0, line_count - 1) * line_spacing + box_border * 2 + 8
             if estimated_height <= max_text_height:
                 return wrapped, font_size, line_spacing, box_border
         font_size = 24
-        return self._wrap_subtitle_text(value, font_size), font_size, 2, 10
+        return self._wrap_subtitle_text(value, font_size), font_size, 0, 8
 
     @staticmethod
     def _wrap_subtitle_text(value: str, font_size: int) -> str:
         text = " ".join(value.split())
         if not text:
             return value
-        max_chars = max(18, min(42, int(900 / max(font_size * 0.52, 1))))
+        max_chars = max(20, min(48, int(980 / max(font_size * 0.48, 1))))
         lines: list[str] = []
         current = ""
         for word in text.split(" "):
