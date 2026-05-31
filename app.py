@@ -32,6 +32,7 @@ APP_TITLE = "VideoGenerator"
 CONFIG_FILE = Path.home() / ".videogenerator_config.json"
 VIDEO_SIZE = "1080:1920"
 FPS = "30"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
 @dataclass
@@ -82,6 +83,7 @@ class VideoGeneratorApp:
         self.root.configure(bg="#f6f7fb")
 
         self.pexels_key = StringVar()
+        self.groq_key = StringVar()
         self.video_title = StringVar(value="video_gerado")
         self.output_dir = StringVar(value=str(Path.home() / "Videos"))
         self.subtitle_enabled = StringVar(value="Sim")
@@ -214,9 +216,10 @@ class VideoGeneratorApp:
 
     def _build_api_tab(self, parent: Frame) -> None:
         ttk.Label(parent, text="Chaves de API", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(parent, text="A chave do Pexels fica salva localmente no seu usuário do Windows.", style="Muted.TLabel").pack(anchor="w", pady=(4, 22))
+        ttk.Label(parent, text="As chaves do Pexels e do Groq ficam salvas localmente no seu usuário do Windows.", style="Muted.TLabel").pack(anchor="w", pady=(4, 22))
 
         self._labeled_entry(parent, "Pexels API", self.pexels_key, show="*")
+        self._labeled_entry(parent, "Groq API", self.groq_key, show="*")
 
         Button(parent, text="Salvar chaves", command=self._save_config, bg="#111827", fg="#ffffff", activebackground="#2a3446", activeforeground="#ffffff", relief="flat", padx=18, pady=10, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(16, 0))
 
@@ -241,11 +244,12 @@ class VideoGeneratorApp:
         top = Frame(parent, bg="#ffffff")
         top.pack(fill=X)
         ttk.Label(top, text="Video", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Escolha o link do Pexels para cada frase ou deixe vazio para buscar automaticamente pela frase.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
+        ttk.Label(top, text="Escolha o link do Pexels para cada frase ou use o Groq para encontrar vídeos que combinem com a frase e o contexto do roteiro.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
 
         actions = Frame(parent, bg="#ffffff")
         actions.pack(fill=X, pady=(0, 12))
         Button(actions, text="Sincronizar frases do roteiro", command=self._refresh_lines, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
+        Button(actions, text="Atualizar videos", command=self._start_video_update, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
         Button(actions, text="Escolher pasta de saída", command=self._choose_output_dir, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
         Label(actions, textvariable=self.output_dir, bg="#ffffff", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT, padx=(12, 0))
 
@@ -453,6 +457,7 @@ class VideoGeneratorApp:
             try:
                 data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
                 self.pexels_key.set(data.get("pexels_key", ""))
+                self.groq_key.set(data.get("groq_key", ""))
                 self.video_title.set(data.get("video_title", self.video_title.get()))
                 self.output_dir.set(data.get("output_dir", self.output_dir.get()))
                 self.subtitle_enabled.set(data.get("subtitle_enabled", self.subtitle_enabled.get()))
@@ -485,6 +490,7 @@ class VideoGeneratorApp:
     def _save_config(self) -> None:
         data = {
             "pexels_key": self.pexels_key.get().strip(),
+            "groq_key": self.groq_key.get().strip(),
             "video_title": self.video_title.get().strip(),
             "output_dir": self.output_dir.get().strip(),
             "subtitle_enabled": self.subtitle_enabled.get().strip(),
@@ -682,6 +688,83 @@ class VideoGeneratorApp:
             dialog.destroy()
 
         Button(dialog, text="Salvar link", command=save, bg="#5b6cff", fg="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(anchor="e", padx=20, pady=18)
+
+    def _start_video_update(self) -> None:
+        self._refresh_lines()
+        if not self.lines:
+            messagebox.showerror(APP_TITLE, "Adicione pelo menos uma frase ao roteiro.")
+            return
+        if not self.pexels_key.get().strip():
+            messagebox.showerror(APP_TITLE, "Informe a chave de API do Pexels na aba APIs.")
+            self._show_tab("apis")
+            return
+        if not self.groq_key.get().strip():
+            messagebox.showerror(APP_TITLE, "Informe a chave de API do Groq na aba APIs.")
+            self._show_tab("apis")
+            return
+        self._save_config()
+        self.progress.configure(value=0, maximum=max(len(self.lines), 1))
+        self.progress_text.set("Atualizando videos...")
+        self.status_text.set("Gerando pesquisas com Groq...")
+        threading.Thread(target=self._update_videos_worker, daemon=True).start()
+
+    def _update_videos_worker(self) -> None:
+        try:
+            phrases = [line.text for line in self.lines]
+            queries = self._groq_pexels_queries(phrases)
+            for index, (line, query) in enumerate(zip(self.lines, queries, strict=True), start=1):
+                self._queue_status(f"Pesquisando vídeo {index}/{len(self.lines)}: {query}", step=True)
+                media_url = self._search_pexels(query)
+                self.lines[index - 1].media_url = media_url
+                self.root.after(0, self._render_lines)
+            self.message_queue.put(("done", "Videos atualizados com links do Pexels e previews em carregamento."))
+        except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
+            self.message_queue.put(("error", str(exc)))
+
+    def _groq_pexels_queries(self, phrases: list[str]) -> list[str]:
+        context = "\n".join(f"{index}. {phrase}" for index, phrase in enumerate(phrases, start=1))
+        prompt = (
+            "Você vai criar pesquisas para encontrar vídeos verticais no Pexels. "
+            "Use o contexto completo do roteiro, mas gere uma pesquisa específica para cada frase. "
+            "As pesquisas devem estar em inglês, com 2 a 6 palavras, visuais, concretas, sem nomes protegidos quando houver alternativa genérica. "
+            "Responda somente JSON válido no formato {\"queries\":[...]} com exatamente uma pesquisa para cada frase.\n\n"
+            f"Título do vídeo: {self.video_title.get().strip() or 'video'}\n"
+            f"Roteiro:\n{context}"
+        )
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self.groq_key.get().strip()}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": GROQ_MODEL,
+                "messages": [
+                    {"role": "system", "content": "Você cria termos de busca curtos para bancos de vídeos."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.2,
+                "max_completion_tokens": 512,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=45,
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", content, flags=re.DOTALL)
+            if not match:
+                raise RuntimeError("O Groq não retornou JSON com as pesquisas de vídeo.")
+            data = json.loads(match.group(0))
+        queries = data.get("queries")
+        if not isinstance(queries, list):
+            raise RuntimeError("O Groq não retornou a lista 'queries'.")
+        clean_queries = [str(query).strip() for query in queries if str(query).strip()]
+        if len(clean_queries) != len(phrases):
+            raise RuntimeError("O Groq retornou uma quantidade diferente de pesquisas em relação às frases do roteiro.")
+        return clean_queries
 
     def _choose_output_dir(self) -> None:
         folder = filedialog.askdirectory(initialdir=self.output_dir.get() or str(Path.home()))
@@ -1371,7 +1454,10 @@ class VideoGeneratorApp:
         video_response.raise_for_status()
         videos = video_response.json().get("videos", [])
         if videos:
-            files = videos[0].get("video_files", [])
+            video = videos[0]
+            if video.get("url"):
+                return video["url"]
+            files = video.get("video_files", [])
             portrait_files = sorted(files, key=lambda item: (item.get("width", 0) < item.get("height", 0), item.get("height", 0)), reverse=True)
             if portrait_files:
                 return portrait_files[0]["link"]
@@ -1385,7 +1471,7 @@ class VideoGeneratorApp:
         photo_response.raise_for_status()
         photos = photo_response.json().get("photos", [])
         if photos:
-            return photos[0]["src"]["large2x"]
+            return photos[0].get("url") or photos[0]["src"]["large2x"]
         raise RuntimeError(f"Nenhuma mídia encontrada no Pexels para: {query}")
 
     def _create_clip(self, ffmpeg: str, media_path: Path, audio_path: Path, clip_path: Path, subtitle_text: str) -> None:
