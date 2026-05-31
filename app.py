@@ -377,9 +377,8 @@ class VideoGeneratorApp:
 
         instructions = (
             "Fluxo usado: abrir o ChatGPT pelo atalho, capturar a janela, localizar automaticamente o campo de texto "
-            "e o botão Enviar pela imagem, enviar 'Apenas repita isso com aspas: [frase]', verificar a tela até "
-            "os 3 pontinhos aparecerem abaixo da resposta completa (começando 2s depois do envio e conferindo a cada 1s), "
-            "abrir o menu, identificar a área nova e clicar em 'Ler em voz alta'."
+            "e o botão Enviar pela imagem, enviar 'Apenas repita isso com aspas: [frase]', esperar a resposta pelo tempo configurado, "
+            "procurar os 3 pontinhos abaixo da resposta completa, abrir o menu, identificar a área nova e clicar em 'Ler em voz alta'."
         )
         Label(content, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
 
@@ -387,7 +386,7 @@ class VideoGeneratorApp:
         shortcut_card.pack(fill=X, pady=(0, 12))
         self._entry_row(shortcut_card, "Atalho para abrir o ChatGPT", self.chatgpt_shortcut, "Padrão: alt+c. Separe teclas com +, por exemplo: ctrl+shift+g.")
         self._entry_row(shortcut_card, "Esperar antes de capturar/enviar (segundos)", self.chatgpt_send_wait, "Tempo para o app do ChatGPT abrir antes da captura automática da janela.")
-        self._entry_row(shortcut_card, "Tempo máximo para resposta (segundos)", self.chatgpt_response_wait, "Limite para ficar verificando a tela até os 3 pontinhos da resposta aparecerem.")
+        self._entry_row(shortcut_card, "Tempo de espera da resposta (segundos)", self.chatgpt_response_wait, "Padrão: 8 segundos antes de procurar os 3 pontinhos da resposta.")
         self._entry_row(shortcut_card, "Esperar após 3 pontinhos (segundos)", self.chatgpt_menu_wait, "Padrão: 1 segundo antes de capturar o menu e clicar em Ler em voz alta.")
 
         auto_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
@@ -853,27 +852,8 @@ class VideoGeneratorApp:
         return ScreenPoint(composer.right - 36, composer.top + composer.height // 2)
 
     def _wait_for_response_more_button(self, before_capture: WindowCapture, timeout: float) -> tuple[WindowCapture, ScreenPoint]:
-        deadline = time.time() + max(timeout, 30.0)
-        before_candidates = self._response_more_candidates(before_capture.image)
-        last_capture: WindowCapture | None = None
-        last_candidates: list[ScreenPoint] = []
-        time.sleep(2.0)
-        while time.time() < deadline:
-            capture = self._capture_chatgpt_window()
-            candidates = self._response_more_candidates(capture.image)
-            if candidates:
-                new_candidate = self._best_new_more_candidate(before_candidates, candidates)
-                if new_candidate is not None:
-                    return capture, new_candidate
-                changed_candidate = self._best_changed_more_candidate(before_capture.image, capture.image, candidates)
-                if changed_candidate is not None:
-                    return capture, changed_candidate
-                last_capture = capture
-                last_candidates = candidates
-            time.sleep(1.0)
-
-        if last_capture and last_candidates:
-            return last_capture, self._select_response_more_candidate(last_capture.image, last_candidates)
+        del before_capture
+        time.sleep(max(timeout, 1.0))
         capture = self._capture_chatgpt_window()
         return capture, self._find_response_more_button(capture.image)
 
