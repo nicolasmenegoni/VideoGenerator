@@ -111,7 +111,18 @@ class VideoGeneratorApp:
         self.status_text = StringVar(value="Pronto.")
         self.progress_text = StringVar(value="")
         self.chatgpt_window_ready = False
-        self.chatgpt_audio_process_names = {"chatgpt", "openai", "msedgewebview2", "applicationframehost"}
+        self.chatgpt_audio_process_names = {
+            "chatgpt",
+            "openai",
+            "msedgewebview2",
+            "applicationframehost",
+            "chrome",
+            "msedge",
+            "firefox",
+            "brave",
+            "opera",
+            "vivaldi",
+        }
         self.media_preview_images: dict[str, ImageTk.PhotoImage] = {}
         self.media_preview_bytes: dict[str, bytes] = {}
         self.media_preview_loading: set[str] = set()
@@ -1432,11 +1443,11 @@ class VideoGeneratorApp:
             self._run_ffmpeg(cmd)
 
         music_file = Path(self.music_path.get()).expanduser()
-        if not self.music_path.get().strip() or not music_file.exists():
+        volume = self._safe_int(self.music_volume.get(), 20, 0, 100) / 100
+        if not self.music_path.get().strip() or not music_file.exists() or volume <= 0:
             shutil.copy2(temp_output, final_path)
             return
 
-        volume = self._safe_int(self.music_volume.get(), 20, 0, 100) / 100
         mixed_output = workdir / "final_with_music.mp4"
         mix_cmd = [
             ffmpeg,
@@ -1448,7 +1459,7 @@ class VideoGeneratorApp:
             "-i",
             str(music_file),
             "-filter_complex",
-            f"[1:a]volume={volume:.2f}[music];[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[a]",
+            f"[0:a]volume=1.0[narration];[1:a]volume={volume:.2f}[music];[narration][music]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[a]",
             "-map",
             "0:v:0",
             "-map",
