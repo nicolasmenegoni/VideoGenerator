@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import urllib.parse
+import uuid
 import warnings
 import wave
 from io import BytesIO
@@ -24,7 +25,7 @@ from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Button, Canvas, Entry, Frame, 
 
 import imageio_ffmpeg
 import numpy as np
-from PIL import Image, ImageTk
+from PIL import Image, ImageGrab, ImageTk
 import pyautogui
 import pyperclip
 import requests
@@ -34,6 +35,7 @@ APP_TITLE = "VideoGenerator"
 CONFIG_FILE = Path.home() / ".videogenerator_config.json"
 VIDEO_SIZE = "1080:1920"
 FPS = "30"
+CLIPBOARD_IMAGE_PREFIX = "clipboard-image://"
 
 
 @dataclass
@@ -549,7 +551,7 @@ class VideoGeneratorApp:
             text_area = Frame(row, bg="#ffffff")
             text_area.pack(side=LEFT, fill=BOTH, expand=True)
             Label(text_area, text=f"{index + 1}. {line.text}", bg="#ffffff", fg="#111827", anchor="w", justify=LEFT, wraplength=560, font=("Segoe UI", 10, "bold")).pack(fill=X, anchor="w")
-            media_label = line.media_url if line.media_url else "Sem link manual: o app buscará automaticamente no Pexels."
+            media_label = self._media_label(line.media_url)
             Label(text_area, text=media_label, bg="#ffffff", fg="#657084", anchor="w", justify=LEFT, wraplength=500, font=("Segoe UI", 9)).pack(fill=X, anchor="w", pady=(4, 0))
             preview = self._media_preview_widget(row, line.media_url)
             preview.pack(side=RIGHT, padx=(12, 0))
@@ -557,6 +559,12 @@ class VideoGeneratorApp:
             buttons.pack(side=RIGHT, padx=(12, 0))
             Button(buttons, text="Colar link", command=lambda idx=index: self._paste_line_link(idx), bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT)
             Button(buttons, text="Editar", command=lambda idx=index: self._edit_line_link(idx), bg="#eef1ff", fg="#27319f", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(8, 0))
+
+    def _media_label(self, media_url: str) -> str:
+        # Mostra um texto amigável quando a mídia veio como imagem colada, sem expor a URI interna.
+        if self._is_clipboard_image_ref(media_url):
+            return "Imagem colada da área de transferência."
+        return media_url if media_url else "Sem link manual: o app buscará automaticamente no Pexels."
 
     def _media_preview_widget(self, parent: Frame, media_url: str) -> Frame:
         preview = Frame(parent, bg="#eef1f8", width=92, height=116, padx=4, pady=4)
@@ -593,7 +601,8 @@ class VideoGeneratorApp:
             return None
 
     def _start_media_preview_load(self, media_url: str) -> None:
-        if media_url in self.media_preview_loading or media_url in self.media_preview_failed:
+        # Imagens coladas já ficam em memória e não precisam de carregamento pela internet.
+        if self._is_clipboard_image_ref(media_url) or media_url in self.media_preview_loading or media_url in self.media_preview_failed:
             return
         self.media_preview_loading.add(media_url)
         api_key = self.pexels_key.get().strip()
@@ -623,6 +632,8 @@ class VideoGeneratorApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def _media_preview_url(self, media_url: str, api_key: str | None = None) -> str:
+        if self._is_clipboard_image_ref(media_url):
+            return ""
         parsed = urllib.parse.urlparse(media_url)
         suffix = Path(parsed.path).suffix.lower()
         if suffix in {".jpg", ".jpeg", ".png", ".webp"}:
@@ -666,10 +677,52 @@ class VideoGeneratorApp:
                 return html.unescape(content_match.group(1))
         return ""
 
+    @staticmethod
+    def _is_clipboard_image_ref(media_url: str) -> bool:
+        # A URI interna identifica imagens coladas sem confundir com links reais da internet.
+        return media_url.strip().startswith(CLIPBOARD_IMAGE_PREFIX)
+
+    @staticmethod
+    def _png_bytes_from_image(image: Image.Image) -> bytes:
+        # PNG mantém boa qualidade e é aceito pelo FFmpeg como imagem de entrada.
+        output = BytesIO()
+        image.save(output, format="PNG")
+        return output.getvalue()
+
+    def _clipboard_image_bytes(self) -> bytes | None:
+        # Tenta ler primeiro uma imagem binária da área de transferência.
+        try:
+            clipboard_content = ImageGrab.grabclipboard()
+        except Exception:
+            return None
+        if isinstance(clipboard_content, Image.Image):
+            return self._png_bytes_from_image(clipboard_content)
+
+        # Em alguns sistemas, copiar uma imagem no Explorer entrega o caminho do arquivo.
+        if isinstance(clipboard_content, list):
+            for item in clipboard_content:
+                candidate = Path(str(item))
+                if candidate.is_file() and candidate.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+                    with Image.open(candidate) as image:
+                        return self._png_bytes_from_image(image)
+        return None
+
     def _paste_line_link(self, index: int) -> None:
+        image_bytes = self._clipboard_image_bytes()
+        if image_bytes:
+            # Salva os bytes em memória e usa a mesma chave para preview e renderização.
+            media_key = f"{CLIPBOARD_IMAGE_PREFIX}{uuid.uuid4().hex}.png"
+            self.media_preview_bytes[media_key] = image_bytes
+            self.media_preview_images.pop(media_key, None)
+            self.media_preview_failed.discard(media_key)
+            self.lines[index].media_url = media_key
+            self._render_lines()
+            self.status_text.set(f"Imagem colada na frase {index + 1}.")
+            return
+
         link = pyperclip.paste().strip()
         if not link:
-            messagebox.showerror(APP_TITLE, "A área de transferência está vazia. Copie um link do Pexels e clique em Colar link.")
+            messagebox.showerror(APP_TITLE, "A área de transferência está vazia. Copie um link do Pexels ou uma imagem e clique em Colar link.")
             return
         self.lines[index].media_url = link
         self._render_lines()
@@ -702,13 +755,25 @@ class VideoGeneratorApp:
             self.output_dir.set(folder)
             self._save_config()
 
+    def _needs_pexels_key(self) -> bool:
+        # A chave só é obrigatória quando uma frase precisa de busca automática ou resolução de página do Pexels.
+        return any(self._line_needs_pexels_key(line.media_url) for line in self.lines)
+
+    def _line_needs_pexels_key(self, media_url: str) -> bool:
+        # Imagens coladas e links diretos com extensão já podem ser renderizados sem consultar a API.
+        clean_url = media_url.strip()
+        if not clean_url or self._is_clipboard_image_ref(clean_url):
+            return not clean_url
+        parsed = urllib.parse.urlparse(clean_url)
+        return "pexels.com" in parsed.netloc and not Path(parsed.path).suffix
+
     def _start_generation(self) -> None:
         self._refresh_lines()
         if not self.lines:
             messagebox.showerror(APP_TITLE, "Adicione pelo menos uma frase ao roteiro.")
             return
-        if not self.pexels_key.get().strip():
-            messagebox.showerror(APP_TITLE, "Informe a chave de API do Pexels na aba APIs.")
+        if self._needs_pexels_key() and not self.pexels_key.get().strip():
+            messagebox.showerror(APP_TITLE, "Informe a chave de API do Pexels na aba APIs ou preencha todas as frases com links diretos/imagens coladas.")
             self._show_tab("apis")
             return
         out_dir = Path(self.output_dir.get()).expanduser()
@@ -1338,6 +1403,15 @@ class VideoGeneratorApp:
 
     def _download_media(self, line: ScriptLine, workdir: Path, index: int) -> Path:
         media_url = line.media_url.strip()
+        if self._is_clipboard_image_ref(media_url):
+            # Recria a imagem colada dentro da pasta temporária para o FFmpeg consumir como arquivo local.
+            image_bytes = self.media_preview_bytes.get(media_url)
+            if not image_bytes:
+                raise RuntimeError(f"Imagem colada da frase {index} não está mais disponível na memória.")
+            output_path = workdir / f"media_{index:03d}.png"
+            output_path.write_bytes(image_bytes)
+            return output_path
+
         if not media_url:
             media_url = self._search_pexels(line.text)
             self.lines[index - 1].media_url = media_url
