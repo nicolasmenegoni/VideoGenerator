@@ -12,6 +12,7 @@ import tempfile
 import threading
 import urllib.parse
 import wave
+from io import BytesIO
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -20,6 +21,7 @@ from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Button, Canvas, Entry, Frame, 
 
 import imageio_ffmpeg
 import numpy as np
+from PIL import Image, ImageTk
 import pyautogui
 import pyperclip
 import requests
@@ -109,6 +111,7 @@ class VideoGeneratorApp:
         self.progress_text = StringVar(value="")
         self.chatgpt_window_ready = False
         self.chatgpt_audio_process_names = {"chatgpt", "openai", "msedgewebview2", "applicationframehost"}
+        self.media_preview_images: dict[str, ImageTk.PhotoImage] = {}
         self.lines: list[ScriptLine] = []
         self.message_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.tabs: dict[str, Frame] = {}
@@ -530,11 +533,71 @@ class VideoGeneratorApp:
             text_area.pack(side=LEFT, fill=BOTH, expand=True)
             Label(text_area, text=f"{index + 1}. {line.text}", bg="#ffffff", fg="#111827", anchor="w", justify=LEFT, wraplength=560, font=("Segoe UI", 10, "bold")).pack(fill=X, anchor="w")
             media_label = line.media_url if line.media_url else "Sem link manual: o app buscará automaticamente no Pexels."
-            Label(text_area, text=media_label, bg="#ffffff", fg="#657084", anchor="w", justify=LEFT, wraplength=560, font=("Segoe UI", 9)).pack(fill=X, anchor="w", pady=(4, 0))
+            Label(text_area, text=media_label, bg="#ffffff", fg="#657084", anchor="w", justify=LEFT, wraplength=500, font=("Segoe UI", 9)).pack(fill=X, anchor="w", pady=(4, 0))
+            preview = self._media_preview_widget(row, line.media_url)
+            preview.pack(side=RIGHT, padx=(12, 0))
             buttons = Frame(row, bg="#ffffff")
             buttons.pack(side=RIGHT, padx=(12, 0))
             Button(buttons, text="Colar link", command=lambda idx=index: self._paste_line_link(idx), bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT)
             Button(buttons, text="Editar", command=lambda idx=index: self._edit_line_link(idx), bg="#eef1ff", fg="#27319f", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(8, 0))
+
+    def _media_preview_widget(self, parent: Frame, media_url: str) -> Frame:
+        preview = Frame(parent, bg="#eef1f8", width=92, height=116, padx=4, pady=4)
+        preview.pack_propagate(False)
+        if not media_url.strip():
+            Label(preview, text="Preview\nPexels", bg="#eef1f8", fg="#8b95a7", justify="center", font=("Segoe UI", 8, "bold")).pack(fill=BOTH, expand=True)
+            return preview
+
+        image = self._load_media_preview(media_url.strip())
+        if image:
+            Label(preview, image=image, bg="#eef1f8").pack(fill=BOTH, expand=True)
+        else:
+            Label(preview, text="Sem\npreview", bg="#eef1f8", fg="#8b95a7", justify="center", font=("Segoe UI", 8, "bold")).pack(fill=BOTH, expand=True)
+        return preview
+
+    def _load_media_preview(self, media_url: str) -> ImageTk.PhotoImage | None:
+        if media_url in self.media_preview_images:
+            return self.media_preview_images[media_url]
+
+        preview_url = self._media_preview_url(media_url)
+        if not preview_url:
+            return None
+        try:
+            response = requests.get(preview_url, timeout=8)
+            response.raise_for_status()
+            image = Image.open(BytesIO(response.content)).convert("RGB")
+            image.thumbnail((84, 108))
+            photo = ImageTk.PhotoImage(image)
+            self.media_preview_images[media_url] = photo
+            return photo
+        except Exception:
+            return None
+
+    def _media_preview_url(self, media_url: str) -> str:
+        parsed = urllib.parse.urlparse(media_url)
+        suffix = Path(parsed.path).suffix.lower()
+        if suffix in {".jpg", ".jpeg", ".png", ".webp"}:
+            return media_url
+        if "pexels.com" not in parsed.netloc:
+            return ""
+
+        match = re.search(r"(\d+)(?:/)?$", parsed.path)
+        if not match or not self.pexels_key.get().strip():
+            return ""
+
+        media_id = match.group(1)
+        headers = {"Authorization": self.pexels_key.get().strip()}
+        try:
+            if "/video" in parsed.path:
+                response = requests.get(f"https://api.pexels.com/videos/videos/{media_id}", headers=headers, timeout=8)
+                response.raise_for_status()
+                return response.json().get("image", "")
+            response = requests.get(f"https://api.pexels.com/v1/photos/{media_id}", headers=headers, timeout=8)
+            response.raise_for_status()
+            src = response.json().get("src", {})
+            return src.get("medium") or src.get("large") or src.get("large2x") or ""
+        except Exception:
+            return ""
 
     def _paste_line_link(self, index: int) -> None:
         link = pyperclip.paste().strip()
@@ -790,6 +853,7 @@ class VideoGeneratorApp:
 
     def _wait_for_response_more_button(self, before_capture: WindowCapture, timeout: float) -> tuple[WindowCapture, ScreenPoint]:
         deadline = time.time() + max(timeout, 30.0)
+        before_candidates = self._response_more_candidates(before_capture.image)
         last_capture: WindowCapture | None = None
         last_candidates: list[ScreenPoint] = []
         time.sleep(1.0)
@@ -797,6 +861,9 @@ class VideoGeneratorApp:
             capture = self._capture_chatgpt_window()
             candidates = self._response_more_candidates(capture.image)
             if candidates:
+                new_candidate = self._best_new_more_candidate(before_candidates, candidates)
+                if new_candidate is not None:
+                    return capture, new_candidate
                 changed_candidate = self._best_changed_more_candidate(before_capture.image, capture.image, candidates)
                 if changed_candidate is not None:
                     return capture, changed_candidate
@@ -846,6 +913,22 @@ class VideoGeneratorApp:
         left_side = [point for point in candidates if point.x < int(width * 0.55)]
         usable = left_side or candidates
         return max(usable, key=lambda point: (point.y, -abs(point.x - width // 3)))
+
+    @staticmethod
+    def _best_new_more_candidate(before_candidates: list[ScreenPoint], after_candidates: list[ScreenPoint]) -> ScreenPoint | None:
+        new_candidates = [
+            candidate
+            for candidate in after_candidates
+            if not any(abs(candidate.x - before.x) <= 10 and abs(candidate.y - before.y) <= 10 for before in before_candidates)
+        ]
+        if not new_candidates:
+            if before_candidates:
+                before_bottom = max(point.y for point in before_candidates)
+                lower_candidates = [candidate for candidate in after_candidates if candidate.y > before_bottom + 12]
+                if lower_candidates:
+                    return max(lower_candidates, key=lambda point: point.y)
+            return None
+        return max(new_candidates, key=lambda point: point.y)
 
     def _best_changed_more_candidate(self, before_image: Any, after_image: Any, candidates: list[ScreenPoint]) -> ScreenPoint | None:
         before = self._image_array(before_image)
