@@ -31,9 +31,9 @@ O executável será criado em `dist/VideoGenerator.exe`.
 ## Uso
 
 1. Abra o app.
-2. Na aba **APIs**, informe as chaves do Pexels e do Groq.
+2. Na aba **APIs**, informe as chaves do Pexels e do Groq. O app salva localmente as chaves e demais configurações quando você clica em **Salvar chaves**, sincroniza o roteiro, gera/atualiza vídeos ou fecha a janela.
 3. Na aba **Roteiro**, preencha o **Titulo** e escreva uma frase por linha. O título será usado como nome do arquivo `.mp4`.
-4. Clique em **Atualizar roteiro** para sincronizar as frases.
+4. Clique em **Atualizar roteiro** para sincronizar as frases. O texto do roteiro e os links de mídia por frase são restaurados quando você fecha e abre o app novamente.
 5. Na aba **Video**, clique em **Atualizar videos** para o Groq analisar cada frase junto com o contexto do roteiro, criar pesquisas visuais para o Pexels e preencher automaticamente os links e previews. Você também pode copiar um link do Pexels e clicar em **Colar link** ao lado da frase para aplicar direto da área de transferência; o app carrega o preview pequeno da foto/vídeo em segundo plano quando consegue resolver a miniatura, sem travar a lista. Use **Editar** se quiser ajustar manualmente, ou deixe vazio para busca automática.
 6. Na aba **Video**, escolha a pasta de saída.
 7. Na aba **Legendas**, configure posição, cor, tamanho, fundo, cor do contorno e fonte. Digite uma frase de teste para ver o preview atualizar em tempo real, ou use **Legendas Desligadas** para renderizar sem legendas. Na renderização final, o app quebra linhas com margem segura, reduz o tamanho quando a frase é longa e usa exatamente o texto da frase do roteiro em um arquivo temporário de legenda para evitar divergências de caracteres.

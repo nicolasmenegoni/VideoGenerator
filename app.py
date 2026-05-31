@@ -33,6 +33,7 @@ CONFIG_FILE = Path.home() / ".videogenerator_config.json"
 VIDEO_SIZE = "1080:1920"
 FPS = "30"
 GROQ_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_SCRIPT_TEXT = "Hoje vamos falar sobre a China.\nEsse país é incrível.\nVamos te provar."
 
 
 @dataclass
@@ -117,6 +118,7 @@ class VideoGeneratorApp:
         self.media_preview_bytes: dict[str, bytes] = {}
         self.media_preview_loading: set[str] = set()
         self.media_preview_failed: set[str] = set()
+        self.script_text_value = DEFAULT_SCRIPT_TEXT
         self.lines: list[ScriptLine] = []
         self.message_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.tabs: dict[str, Frame] = {}
@@ -126,6 +128,7 @@ class VideoGeneratorApp:
         self._configure_style()
         self._load_config()
         self._build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(120, self._process_queue)
 
     def run(self) -> None:
@@ -234,7 +237,7 @@ class VideoGeneratorApp:
 
         self.script_text = Text(parent, height=12, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
         self.script_text.pack(fill=BOTH, expand=True)
-        self.script_text.insert("1.0", "Hoje vamos falar sobre a China.\nEsse país é incrível.\nVamos te provar.")
+        self.script_text.insert("1.0", self.script_text_value)
 
         actions = Frame(parent, bg="#ffffff", pady=12)
         actions.pack(fill=X)
@@ -459,6 +462,8 @@ class VideoGeneratorApp:
                 self.pexels_key.set(data.get("pexels_key", ""))
                 self.groq_key.set(data.get("groq_key", ""))
                 self.video_title.set(data.get("video_title", self.video_title.get()))
+                self.script_text_value = data.get("script_text", self.script_text_value)
+                self.lines = self._config_lines(data.get("script_lines", []))
                 self.output_dir.set(data.get("output_dir", self.output_dir.get()))
                 self.subtitle_enabled.set(data.get("subtitle_enabled", self.subtitle_enabled.get()))
                 self.subtitle_position.set(data.get("subtitle_position", self.subtitle_position.get()))
@@ -487,11 +492,14 @@ class VideoGeneratorApp:
             except json.JSONDecodeError:
                 pass
 
-    def _save_config(self) -> None:
+    def _save_config(self, show_status: bool = True) -> None:
+        self.script_text_value = self._script_text_content()
         data = {
             "pexels_key": self.pexels_key.get().strip(),
             "groq_key": self.groq_key.get().strip(),
             "video_title": self.video_title.get().strip(),
+            "script_text": self.script_text_value,
+            "script_lines": self._config_script_lines(),
             "output_dir": self.output_dir.get().strip(),
             "subtitle_enabled": self.subtitle_enabled.get().strip(),
             "subtitle_position": self.subtitle_position.get().strip(),
@@ -519,13 +527,46 @@ class VideoGeneratorApp:
             "music_volume": self.music_volume.get().strip(),
         }
         CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        self.status_text.set("Configurações salvas no perfil do usuário.")
+        if show_status:
+            self.status_text.set("Configurações salvas no perfil do usuário.")
+
+    def _script_text_content(self) -> str:
+        if hasattr(self, "script_text"):
+            return self.script_text.get("1.0", "end-1c")
+        return self.script_text_value
+
+    @staticmethod
+    def _config_lines(raw_lines: Any) -> list[ScriptLine]:
+        if not isinstance(raw_lines, list):
+            return []
+        lines: list[ScriptLine] = []
+        for item in raw_lines:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text", "")).strip()
+            if text:
+                lines.append(ScriptLine(text=text, media_url=str(item.get("media_url", "")).strip()))
+        return lines
+
+    def _config_script_lines(self) -> list[dict[str, str]]:
+        existing = {line.text: line.media_url for line in self.lines}
+        phrases = [line.strip() for line in self.script_text_value.splitlines() if line.strip()]
+        if phrases:
+            return [{"text": phrase, "media_url": existing.get(phrase, "")} for phrase in phrases]
+        return [{"text": line.text, "media_url": line.media_url} for line in self.lines]
+
+    def _on_close(self) -> None:
+        try:
+            self._save_config(show_status=False)
+        finally:
+            self.root.destroy()
 
     def _refresh_lines(self) -> None:
         existing = {line.text: line.media_url for line in self.lines}
         phrases = [line.strip() for line in self.script_text.get("1.0", END).splitlines() if line.strip()]
         self.lines = [ScriptLine(text=phrase, media_url=existing.get(phrase, "")) for phrase in phrases]
         self._render_lines()
+        self._save_config(show_status=False)
         self.status_text.set(f"{len(self.lines)} frase(s) sincronizada(s).")
 
     def _render_lines(self) -> None:
@@ -666,6 +707,7 @@ class VideoGeneratorApp:
             return
         self.lines[index].media_url = link
         self._render_lines()
+        self._save_config(show_status=False)
         self.status_text.set(f"Link colado na frase {index + 1}.")
 
     def _edit_line_link(self, index: int) -> None:
@@ -685,6 +727,7 @@ class VideoGeneratorApp:
         def save() -> None:
             self.lines[index].media_url = value.get().strip()
             self._render_lines()
+            self._save_config(show_status=False)
             dialog.destroy()
 
         Button(dialog, text="Salvar link", command=save, bg="#5b6cff", fg="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(anchor="e", padx=20, pady=18)
@@ -717,6 +760,7 @@ class VideoGeneratorApp:
                 media_url = self._search_pexels(query)
                 self.lines[index - 1].media_url = media_url
                 self.root.after(0, self._render_lines)
+            self.root.after(0, lambda: self._save_config(show_status=False))
             self.message_queue.put(("done", "Videos atualizados com links do Pexels e previews em carregamento."))
         except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
             self.message_queue.put(("error", str(exc)))
