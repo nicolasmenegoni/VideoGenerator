@@ -378,7 +378,8 @@ class VideoGeneratorApp:
         instructions = (
             "Fluxo usado: abrir o ChatGPT pelo atalho, capturar a janela, localizar automaticamente o campo de texto "
             "e o botão Enviar pela imagem, enviar 'Apenas repita isso com aspas: [frase]', verificar a tela até "
-            "os 3 pontinhos aparecerem abaixo da resposta completa, abrir o menu, identificar a área nova e clicar em 'Ler em voz alta'."
+            "os 3 pontinhos aparecerem abaixo da resposta completa (começando 2s depois do envio e conferindo a cada 1s), "
+            "abrir o menu, identificar a área nova e clicar em 'Ler em voz alta'."
         )
         Label(content, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
 
@@ -856,7 +857,7 @@ class VideoGeneratorApp:
         before_candidates = self._response_more_candidates(before_capture.image)
         last_capture: WindowCapture | None = None
         last_candidates: list[ScreenPoint] = []
-        time.sleep(1.0)
+        time.sleep(2.0)
         while time.time() < deadline:
             capture = self._capture_chatgpt_window()
             candidates = self._response_more_candidates(capture.image)
@@ -869,7 +870,7 @@ class VideoGeneratorApp:
                     return capture, changed_candidate
                 last_capture = capture
                 last_candidates = candidates
-            time.sleep(0.6)
+            time.sleep(1.0)
 
         if last_capture and last_candidates:
             return last_capture, self._select_response_more_candidate(last_capture.image, last_candidates)
@@ -885,34 +886,50 @@ class VideoGeneratorApp:
     def _response_more_candidates(self, image: Any) -> list[ScreenPoint]:
         array = self._image_array(image)
         height, _, _ = array.shape
-        bright_mask = (array[:, :, 0] >= 215) & (array[:, :, 1] >= 215) & (array[:, :, 2] >= 215)
+        channels_spread = array.max(axis=2) - array.min(axis=2)
+        bright_mask = (
+            (array[:, :, 0] >= 185)
+            & (array[:, :, 1] >= 185)
+            & (array[:, :, 2] >= 185)
+            & (channels_spread <= 55)
+        )
         bright_mask[: int(height * 0.14), :] = False
         try:
             composer = self._find_chatgpt_composer(image)
-            bright_mask[max(composer.top - 20, 0) :, :] = False
+            if composer.top > int(height * 0.60):
+                bright_mask[max(composer.top - 4, 0) :, :] = False
+            else:
+                bright_mask[int(height * 0.82) :, :] = False
         except RuntimeError:
             bright_mask[int(height * 0.82) :, :] = False
 
-        tiny = [component for component in self._components(bright_mask, min_area=2) if 1 <= component.width <= 8 and 1 <= component.height <= 8]
+        tiny = [
+            component
+            for component in self._components(bright_mask, min_area=2)
+            if 1 <= component.width <= 12
+            and 1 <= component.height <= 12
+            and component.width * component.height <= 100
+        ]
         centers = [component.center for component in tiny]
         candidates: list[ScreenPoint] = []
         for first in centers:
-            neighbors = [point for point in centers if abs(point.y - first.y) <= 4 and 4 <= point.x - first.x <= 28]
+            neighbors = [point for point in centers if abs(point.y - first.y) <= 5 and 4 <= point.x - first.x <= 30]
             for second in neighbors:
-                third_options = [point for point in centers if abs(point.y - first.y) <= 4 and 4 <= point.x - second.x <= 28]
+                third_options = [point for point in centers if abs(point.y - first.y) <= 5 and 4 <= point.x - second.x <= 30]
                 for third in third_options:
                     span = third.x - first.x
-                    if 10 <= span <= 36:
+                    first_gap = second.x - first.x
+                    second_gap = third.x - second.x
+                    if 10 <= span <= 44 and max(first_gap, second_gap) <= min(first_gap, second_gap) * 2.2:
                         candidate = ScreenPoint((first.x + third.x) // 2, int(round((first.y + second.y + third.y) / 3)))
                         if not any(abs(candidate.x - existing.x) <= 3 and abs(candidate.y - existing.y) <= 3 for existing in candidates):
                             candidates.append(candidate)
         return candidates
 
     def _select_response_more_candidate(self, image: Any, candidates: list[ScreenPoint]) -> ScreenPoint:
-        width = self._image_array(image).shape[1]
-        left_side = [point for point in candidates if point.x < int(width * 0.55)]
-        usable = left_side or candidates
-        return max(usable, key=lambda point: (point.y, -abs(point.x - width // 3)))
+        bottom_y = max(point.y for point in candidates)
+        bottom_row = [point for point in candidates if abs(point.y - bottom_y) <= 8]
+        return max(bottom_row, key=lambda point: point.x)
 
     @staticmethod
     def _best_new_more_candidate(before_candidates: list[ScreenPoint], after_candidates: list[ScreenPoint]) -> ScreenPoint | None:
@@ -926,9 +943,9 @@ class VideoGeneratorApp:
                 before_bottom = max(point.y for point in before_candidates)
                 lower_candidates = [candidate for candidate in after_candidates if candidate.y > before_bottom + 12]
                 if lower_candidates:
-                    return max(lower_candidates, key=lambda point: point.y)
+                    return max(lower_candidates, key=lambda point: (point.y, point.x))
             return None
-        return max(new_candidates, key=lambda point: point.y)
+        return max(new_candidates, key=lambda point: (point.y, point.x))
 
     def _best_changed_more_candidate(self, before_image: Any, after_image: Any, candidates: list[ScreenPoint]) -> ScreenPoint | None:
         before = self._image_array(before_image)
