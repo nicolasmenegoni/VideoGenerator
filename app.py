@@ -279,8 +279,8 @@ class VideoGeneratorApp:
             "Crie um roteiro curto para um vídeo vertical em português do Brasil com base no título informado. "
             "O roteiro deve ter de 6 a 10 frases curtas, naturais para narração em voz alta, com gancho no começo e fechamento no final. "
             "Cada frase deve funcionar como uma cena separada do vídeo. "
-            "Não use numeração, marcadores, emojis, markdown, aspas ou título dentro das frases. "
-            "Responda preferencialmente em JSON no formato {\"lines\":[...]} com cada frase como um item.\n\n"
+            "Não use numeração, marcadores, emojis, markdown, aspas, chaves, colchetes ou título dentro das frases. "
+            "Responda somente com as frases finais, uma por linha, sem JSON e sem texto extra.\n\n"
             f"Título: {title}"
         )
         content = self._groq_chat_content(
@@ -291,15 +291,14 @@ class VideoGeneratorApp:
             temperature=0.7,
             max_tokens=900,
         )
-        raw_lines: list[Any]
         try:
             data = self._json_object_from_text(content)
         except json.JSONDecodeError:
-            raw_lines = content.splitlines()
+            raw_lines = self._script_lines_from_text(content)
         else:
             raw_lines = data.get("lines")
             if not isinstance(raw_lines, list):
-                raise RuntimeError("O Groq não retornou a lista 'lines'.")
+                raw_lines = self._script_lines_from_text(content)
         lines = [self._clean_script_line(line) for line in raw_lines]
         lines = [line for line in lines if line]
         if not lines:
@@ -345,9 +344,24 @@ class VideoGeneratorApp:
         return data
 
     @staticmethod
+    def _script_lines_from_text(content: str) -> list[str]:
+        text = content.strip().replace("\\n", "\n")
+        lines_match = re.search(r'"lines"\s*:\s*\[(.*?)\]\s*\}?\s*$', text, flags=re.DOTALL)
+        if lines_match:
+            text = lines_match.group(1).strip()
+        text = re.sub(r'^\{?\s*"lines"\s*:\s*\[?', "", text).strip()
+        text = re.sub(r'\]?\s*\}?$', "", text).strip()
+        raw_lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if len(raw_lines) <= 1 and "," in text:
+            raw_lines = [line.strip() for line in text.split(",") if line.strip()]
+        return raw_lines
+
+    @staticmethod
     def _clean_script_line(line: Any) -> str:
         text = str(line).strip()
+        text = re.sub(r'^\{?\s*"?lines"?\s*:\s*\[?', "", text).strip()
         text = re.sub(r"^[-•*\d.)\s]+", "", text).strip()
+        text = text.strip(" \t\r\n,[]{}\"'")
         return " ".join(text.split())
 
     def _build_video_tab(self, parent: Frame) -> None:
