@@ -748,11 +748,15 @@ class VideoGeneratorApp:
                 workdir = Path(tmp)
                 ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
                 clips: list[Path] = []
-                for index, line in enumerate(self.lines, start=1):
-                    self._queue_status(f"Gerando áudio {index}/{len(self.lines)}...", step=True)
-                    audio_path = workdir / f"audio_{index:03d}.wav"
-                    self._generate_tts(line.text, audio_path)
+                audio_paths: list[Path] = []
+                with self._continuous_loopback_recorder():
+                    for index, line in enumerate(self.lines, start=1):
+                        self._queue_status(f"Gerando áudio {index}/{len(self.lines)}...", step=True)
+                        audio_path = workdir / f"audio_{index:03d}.wav"
+                        self._generate_tts(line.text, audio_path)
+                        audio_paths.append(audio_path)
 
+                for index, (line, audio_path) in enumerate(zip(self.lines, audio_paths, strict=True), start=1):
                     self._queue_status(f"Baixando mídia {index}/{len(self.lines)}...", step=True)
                     media_path = self._download_media(line, workdir, index)
 
@@ -1161,10 +1165,55 @@ class VideoGeneratorApp:
         if normalized:
             self.chatgpt_audio_process_names.add(normalized)
 
-    def _record_system_audio(self, output_path: Path, duration: float, on_ready: Callable[[], None] | None = None) -> float:
+    @contextmanager
+    def _continuous_loopback_recorder(self):
         sample_rate = 48000
         chunk_seconds = 0.25
         chunk_frames = int(sample_rate * chunk_seconds)
+        if getattr(self, "_loopback_thread_running", False):
+            yield
+            return
+
+        speaker = sc.default_speaker()
+        microphone = sc.get_microphone(id=str(speaker.name), include_loopback=True)
+        stop_event = threading.Event()
+        lock = threading.Lock()
+        self._loopback_chunks: list[np.ndarray] = []
+        self._loopback_collecting = False
+        self._loopback_lock = lock
+        self._loopback_sample_rate = sample_rate
+        self._loopback_chunk_seconds = chunk_seconds
+        self._loopback_thread_running = True
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="data discontinuity in recording.*")
+            with microphone.recorder(samplerate=sample_rate) as recorder:
+                def drain_loop() -> None:
+                    while not stop_event.is_set():
+                        try:
+                            chunk = recorder.record(numframes=chunk_frames)
+                        except Exception:
+                            if not stop_event.is_set():
+                                time.sleep(chunk_seconds)
+                            continue
+                        with lock:
+                            if self._loopback_collecting:
+                                self._loopback_chunks.append(chunk)
+
+                thread = threading.Thread(target=drain_loop, daemon=True)
+                thread.start()
+                try:
+                    yield
+                finally:
+                    stop_event.set()
+                    thread.join(timeout=2.0)
+                    self._loopback_thread_running = False
+                    self._loopback_collecting = False
+                    self._loopback_chunks = []
+
+    def _record_system_audio(self, output_path: Path, duration: float, on_ready: Callable[[], None] | None = None) -> float:
+        sample_rate = 48000
+        chunk_seconds = 0.25
         silence_limit = 1.25
         silence_threshold = 0.003
         minimum_record_seconds = min(max(duration * 0.45, 3.0), duration)
@@ -1173,26 +1222,55 @@ class VideoGeneratorApp:
         silent_time = 0.0
         elapsed = 0.0
 
-        speaker = sc.default_speaker()
-        microphone = sc.get_microphone(id=str(speaker.name), include_loopback=True)
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="data discontinuity in recording.*")
-            with microphone.recorder(samplerate=sample_rate) as recorder:
-                if on_ready is not None:
-                    on_ready()
+        def consume_chunk(chunk: np.ndarray) -> bool:
+            nonlocal speech_started, silent_time, elapsed
+            chunks.append(chunk)
+            mono_chunk = chunk.mean(axis=1) if chunk.ndim > 1 else chunk
+            level = float(np.sqrt(np.mean(np.square(mono_chunk)))) if mono_chunk.size else 0.0
+            if level > silence_threshold:
+                speech_started = True
+                silent_time = 0.0
+            elif speech_started:
+                silent_time += chunk_seconds
+            elapsed += chunk_seconds
+            return bool(speech_started and elapsed >= minimum_record_seconds and silent_time >= silence_limit)
+
+        if getattr(self, "_loopback_thread_running", False):
+            with self._loopback_lock:
+                self._loopback_chunks = []
+                self._loopback_collecting = True
+            if on_ready is not None:
+                on_ready()
+            try:
                 while elapsed < duration:
-                    chunk = recorder.record(numframes=chunk_frames)
-                    chunks.append(chunk)
-                    mono_chunk = chunk.mean(axis=1) if chunk.ndim > 1 else chunk
-                    level = float(np.sqrt(np.mean(np.square(mono_chunk)))) if mono_chunk.size else 0.0
-                    if level > silence_threshold:
-                        speech_started = True
-                        silent_time = 0.0
-                    elif speech_started:
-                        silent_time += chunk_seconds
-                    elapsed += chunk_seconds
-                    if speech_started and elapsed >= minimum_record_seconds and silent_time >= silence_limit:
+                    time.sleep(chunk_seconds)
+                    with self._loopback_lock:
+                        pending = self._loopback_chunks
+                        self._loopback_chunks = []
+                    should_stop = False
+                    for chunk in pending:
+                        should_stop = consume_chunk(chunk) or should_stop
+                    if should_stop:
                         break
+            finally:
+                with self._loopback_lock:
+                    self._loopback_collecting = False
+                    pending = self._loopback_chunks
+                    self._loopback_chunks = []
+                for chunk in pending:
+                    consume_chunk(chunk)
+        else:
+            chunk_frames = int(sample_rate * chunk_seconds)
+            speaker = sc.default_speaker()
+            microphone = sc.get_microphone(id=str(speaker.name), include_loopback=True)
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="data discontinuity in recording.*")
+                with microphone.recorder(samplerate=sample_rate) as recorder:
+                    if on_ready is not None:
+                        on_ready()
+                    while elapsed < duration:
+                        if consume_chunk(recorder.record(numframes=chunk_frames)):
+                            break
 
         audio = np.concatenate(chunks) if chunks else np.zeros(int(sample_rate * 0.5), dtype=np.float32)
         if audio.ndim > 1:
