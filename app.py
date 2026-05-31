@@ -121,6 +121,7 @@ class VideoGeneratorApp:
         self.media_preview_failed: set[str] = set()
         self.script_text_value = DEFAULT_SCRIPT_TEXT
         self.lines: list[ScriptLine] = []
+        self.used_media_urls: set[str] = set()
         self.message_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.tabs: dict[str, Frame] = {}
         self.nav_buttons: dict[str, Button] = {}
@@ -588,6 +589,7 @@ class VideoGeneratorApp:
                 self.video_title.set(data.get("video_title", self.video_title.get()))
                 self.script_text_value = data.get("script_text", self.script_text_value)
                 self.lines = self._config_lines(data.get("script_lines", []))
+                self.used_media_urls.update({line.media_url for line in self.lines if line.media_url})
                 self.output_dir.set(data.get("output_dir", self.output_dir.get()))
                 self.video_extra_after_audio.set(data.get("video_extra_after_audio", self.video_extra_after_audio.get()))
                 self.subtitle_enabled.set(data.get("subtitle_enabled", self.subtitle_enabled.get()))
@@ -671,8 +673,12 @@ class VideoGeneratorApp:
                 continue
             text = str(item.get("text", "")).strip()
             if text:
-                lines.append(ScriptLine(text=text, media_url=str(item.get("media_url", "")).strip()))
+                media_url = str(item.get("media_url", "")).strip()
+                lines.append(ScriptLine(text=text, media_url=media_url))
         return lines
+
+    def _all_media_urls(self) -> set[str]:
+        return {line.media_url.strip() for line in self.lines if line.media_url.strip()} | getattr(self, "used_media_urls", set())
 
     def _config_script_lines(self) -> list[dict[str, str]]:
         existing = {line.text: line.media_url for line in self.lines}
@@ -832,6 +838,7 @@ class VideoGeneratorApp:
         if not link:
             messagebox.showerror(APP_TITLE, "A área de transferência está vazia. Copie um link do Pexels e clique em Colar link.")
             return
+        self.used_media_urls.add(link)
         self.lines[index].media_url = link
         self._render_lines()
         self._save_config(show_status=False)
@@ -852,7 +859,10 @@ class VideoGeneratorApp:
         Entry(dialog, textvariable=value, bd=0, bg="#f3f5fb", fg="#111827", font=("Segoe UI", 10)).pack(fill=X, padx=20, ipady=9)
 
         def save() -> None:
-            self.lines[index].media_url = value.get().strip()
+            media_url = value.get().strip()
+            if media_url:
+                self.used_media_urls.add(media_url)
+            self.lines[index].media_url = media_url
             self._render_lines()
             self._save_config(show_status=False)
             dialog.destroy()
@@ -881,12 +891,13 @@ class VideoGeneratorApp:
         try:
             line = self.lines[index]
             query = self._groq_single_pexels_query(index)
-            media_url = self._search_pexels(query, exclude_urls={line.media_url})
+            media_url = self._search_pexels(query, exclude_urls=self._all_media_urls())
+            self.used_media_urls.update({line.media_url, media_url})
             self.lines[index].media_url = media_url
             self.root.after(0, self._render_lines)
             self.root.after(0, lambda: self._save_config(show_status=False))
             self.message_queue.put(("step", f"Outro video aplicado na frase {index + 1}."))
-            self.message_queue.put(("done", f"Outro video encontrado para a frase {index + 1}."))
+            self.message_queue.put(("status", f"Outro video aplicado na frase {index + 1}."))
         except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
             self.message_queue.put(("error", str(exc)))
 
@@ -945,7 +956,8 @@ class VideoGeneratorApp:
             queries = self._groq_pexels_queries(phrases)
             for index, (line, query) in enumerate(zip(self.lines, queries, strict=True), start=1):
                 self._queue_status(f"Pesquisando vídeo {index}/{len(self.lines)}: {query}", step=True)
-                media_url = self._search_pexels(query)
+                media_url = self._search_pexels(query, exclude_urls=self._all_media_urls())
+                self.used_media_urls.add(media_url)
                 self.lines[index - 1].media_url = media_url
                 self.root.after(0, self._render_lines)
             self.root.after(0, lambda: self._save_config(show_status=False))
@@ -1624,7 +1636,8 @@ class VideoGeneratorApp:
     def _download_media(self, line: ScriptLine, workdir: Path, index: int) -> Path:
         media_url = line.media_url.strip()
         if not media_url:
-            media_url = self._search_pexels(line.text)
+            media_url = self._search_pexels(line.text, exclude_urls=self._all_media_urls())
+            self.used_media_urls.add(media_url)
             self.lines[index - 1].media_url = media_url
             self.root.after(0, self._render_lines)
         media_url = self._resolve_pexels_page_url(media_url)
@@ -1710,9 +1723,9 @@ class VideoGeneratorApp:
             candidate = remember_candidate(str(photo.get("url", "") or photo.get("src", {}).get("large2x", "")))
             if candidate:
                 return candidate
-        if first_candidate:
+        if first_candidate and not excluded:
             return first_candidate
-        raise RuntimeError(f"Nenhuma mídia encontrada no Pexels para: {query}")
+        raise RuntimeError(f"Nenhuma mídia nova encontrada no Pexels para: {query}")
 
     @staticmethod
     def _media_identity(media_url: str) -> str:
