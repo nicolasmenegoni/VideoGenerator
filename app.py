@@ -901,15 +901,53 @@ class VideoGeneratorApp:
         except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
             self.message_queue.put(("error", str(exc)))
 
+    def _script_subject_keywords(self) -> str:
+        title = self.video_title.get().strip()
+        text = " ".join([title, *(line.text for line in self.lines)])
+        words = re.findall(r"[A-Za-zÀ-ÿ0-9]+", text)
+        stopwords = {
+            "a", "o", "os", "as", "um", "uma", "uns", "umas", "de", "do", "da", "dos", "das", "e", "em", "no", "na", "nos", "nas",
+            "para", "por", "com", "sem", "sobre", "que", "se", "ao", "aos", "mais", "menos", "muito", "muita", "muitos", "muitas",
+            "video", "vídeo", "roteiro", "frase", "hoje", "vamos", "falar", "te", "provar", "esse", "essa", "este", "esta",
+        }
+        keywords: list[str] = []
+        for word in words:
+            clean = word.strip()
+            if len(clean) < 3 or clean.lower() in stopwords:
+                continue
+            if clean.lower() not in {item.lower() for item in keywords}:
+                keywords.append(clean)
+            if len(keywords) >= 5:
+                break
+        return ", ".join(keywords or ([title] if title else []))
+
+    def _ensure_subject_in_query(self, query: str) -> str:
+        clean_query = " ".join(str(query).split()).strip(' ,.;:[]{}"\'')
+        subject = self.video_title.get().strip()
+        if not subject:
+            return clean_query
+        subject_terms = [word.lower() for word in re.findall(r"[A-Za-zÀ-ÿ0-9]+", subject) if len(word) >= 3]
+        subject_aliases = {"china": ["chinese", "great wall", "beijing", "shanghai"]}
+        expanded_terms = [term for term in subject_terms]
+        for term in subject_terms:
+            expanded_terms.extend(subject_aliases.get(term, []))
+        query_lower = clean_query.lower()
+        if any(term in query_lower for term in expanded_terms):
+            return clean_query
+        subject_prefix = " ".join(subject.split()[:3])
+        return f"{subject_prefix} {clean_query}".strip()
+
     def _groq_single_pexels_query(self, index: int) -> str:
         context = "\n".join(f"{line_index}. {line.text}" for line_index, line in enumerate(self.lines, start=1))
         current_url = self.lines[index].media_url.strip() or "sem video atual"
         prompt = (
             "Crie uma nova pesquisa para encontrar um video vertical no Pexels para a frase indicada. "
-            "Use o contexto completo do roteiro, mas gere uma busca diferente da tentativa anterior. "
-            "A pesquisa deve estar em inglês, ter 2 a 6 palavras, ser visual e concreta. "
+            "A busca DEVE manter o assunto principal do título/roteiro. Por exemplo, se o título for China, todas as buscas devem conter China ou um local/símbolo claramente chinês. "
+            "Use a frase apenas para escolher o tipo de cena dentro desse assunto, e gere uma busca diferente da tentativa anterior. "
+            "A pesquisa deve estar em inglês, ter 3 a 7 palavras, ser visual, concreta e adequada ao Pexels. "
             "Responda somente JSON válido no formato {\"query\":\"...\"}.\n\n"
-            f"Título do vídeo: {self.video_title.get().strip() or 'video'}\n"
+            f"Título do vídeo / assunto principal: {self.video_title.get().strip() or 'video'}\n"
+            f"Palavras-chave do assunto: {self._script_subject_keywords()}\n"
             f"Frase selecionada ({index + 1}): {self.lines[index].text}\n"
             f"Video atual a evitar: {current_url}\n"
             f"Roteiro completo:\n{context}"
@@ -927,6 +965,7 @@ class VideoGeneratorApp:
             query = str(data.get("query", "")).strip()
         except json.JSONDecodeError:
             query = self._clean_script_line(content.splitlines()[0] if content.splitlines() else content)
+        query = self._ensure_subject_in_query(query)
         if not query:
             raise RuntimeError("O Groq não retornou uma pesquisa para o novo video.")
         return query
@@ -969,10 +1008,12 @@ class VideoGeneratorApp:
         context = "\n".join(f"{index}. {phrase}" for index, phrase in enumerate(phrases, start=1))
         prompt = (
             "Você vai criar pesquisas para encontrar vídeos verticais no Pexels. "
-            "Use o contexto completo do roteiro, mas gere uma pesquisa específica para cada frase. "
-            "As pesquisas devem estar em inglês, com 2 a 6 palavras, visuais, concretas, sem nomes protegidos quando houver alternativa genérica. "
+            "Todas as pesquisas DEVEM manter o assunto principal do título/roteiro. Por exemplo, se o vídeo é sobre China, busque China, Chinese city, Great Wall, Chinese culture etc.; não use cenas genéricas sem China. "
+            "Use cada frase apenas para variar o tipo de cena dentro desse mesmo assunto principal. "
+            "As pesquisas devem estar em inglês, com 3 a 7 palavras, visuais, concretas e adequadas ao Pexels. "
             "Responda somente JSON válido no formato {\"queries\":[...]} com exatamente uma pesquisa para cada frase.\n\n"
-            f"Título do vídeo: {self.video_title.get().strip() or 'video'}\n"
+            f"Título do vídeo / assunto principal: {self.video_title.get().strip() or 'video'}\n"
+            f"Palavras-chave do assunto: {self._script_subject_keywords()}\n"
             f"Roteiro:\n{context}"
         )
         content = self._groq_chat_content(
@@ -990,7 +1031,7 @@ class VideoGeneratorApp:
         queries = data.get("queries")
         if not isinstance(queries, list):
             raise RuntimeError("O Groq não retornou a lista 'queries'.")
-        clean_queries = [str(query).strip() for query in queries if str(query).strip()]
+        clean_queries = [self._ensure_subject_in_query(str(query).strip()) for query in queries if str(query).strip()]
         if len(clean_queries) != len(phrases):
             raise RuntimeError("O Groq retornou uma quantidade diferente de pesquisas em relação às frases do roteiro.")
         return clean_queries
