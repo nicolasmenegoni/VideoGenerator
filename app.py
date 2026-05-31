@@ -280,9 +280,33 @@ class VideoGeneratorApp:
             "O roteiro deve ter de 6 a 10 frases curtas, naturais para narração em voz alta, com gancho no começo e fechamento no final. "
             "Cada frase deve funcionar como uma cena separada do vídeo. "
             "Não use numeração, marcadores, emojis, markdown, aspas ou título dentro das frases. "
-            "Responda somente JSON válido no formato {\"lines\":[...]} com cada frase como um item.\n\n"
+            "Responda preferencialmente em JSON no formato {\"lines\":[...]} com cada frase como um item.\n\n"
             f"Título: {title}"
         )
+        content = self._groq_chat_content(
+            messages=[
+                {"role": "system", "content": "Você cria roteiros curtos para vídeos verticais em português do Brasil."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+            max_tokens=900,
+        )
+        raw_lines: list[Any]
+        try:
+            data = self._json_object_from_text(content)
+        except json.JSONDecodeError:
+            raw_lines = content.splitlines()
+        else:
+            raw_lines = data.get("lines")
+            if not isinstance(raw_lines, list):
+                raise RuntimeError("O Groq não retornou a lista 'lines'.")
+        lines = [self._clean_script_line(line) for line in raw_lines]
+        lines = [line for line in lines if line]
+        if not lines:
+            raise RuntimeError("O Groq retornou um roteiro vazio.")
+        return lines
+
+    def _groq_chat_content(self, messages: list[dict[str, str]], temperature: float, max_tokens: int, timeout: int = 45) -> str:
         response = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={
@@ -291,33 +315,34 @@ class VideoGeneratorApp:
             },
             json={
                 "model": GROQ_MODEL,
-                "messages": [
-                    {"role": "system", "content": "Você cria roteiros curtos para vídeos verticais em português do Brasil."},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.7,
-                "max_completion_tokens": 900,
-                "response_format": {"type": "json_object"},
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
             },
-            timeout=45,
+            timeout=timeout,
         )
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
+        if response.status_code >= 400:
+            detail = response.text.strip()
+            try:
+                error = response.json().get("error", {})
+                detail = error.get("message") or detail
+            except Exception:
+                pass
+            raise RuntimeError(f"Erro da API do Groq ({response.status_code}): {detail}")
+        return response.json()["choices"][0]["message"]["content"]
+
+    @staticmethod
+    def _json_object_from_text(content: str) -> dict[str, Any]:
         try:
             data = json.loads(content)
         except json.JSONDecodeError:
             match = re.search(r"\{.*\}", content, flags=re.DOTALL)
             if not match:
-                raise RuntimeError("O Groq não retornou JSON com o roteiro.")
+                raise
             data = json.loads(match.group(0))
-        raw_lines = data.get("lines")
-        if not isinstance(raw_lines, list):
-            raise RuntimeError("O Groq não retornou a lista 'lines'.")
-        lines = [self._clean_script_line(line) for line in raw_lines]
-        lines = [line for line in lines if line]
-        if not lines:
-            raise RuntimeError("O Groq retornou um roteiro vazio.")
-        return lines
+        if not isinstance(data, dict):
+            raise RuntimeError("O Groq não retornou um objeto JSON.")
+        return data
 
     @staticmethod
     def _clean_script_line(line: Any) -> str:
@@ -857,33 +882,18 @@ class VideoGeneratorApp:
             f"Título do vídeo: {self.video_title.get().strip() or 'video'}\n"
             f"Roteiro:\n{context}"
         )
-        response = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self.groq_key.get().strip()}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": GROQ_MODEL,
-                "messages": [
-                    {"role": "system", "content": "Você cria termos de busca curtos para bancos de vídeos."},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.2,
-                "max_completion_tokens": 512,
-                "response_format": {"type": "json_object"},
-            },
-            timeout=45,
+        content = self._groq_chat_content(
+            messages=[
+                {"role": "system", "content": "Você cria termos de busca curtos para bancos de vídeos."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=512,
         )
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
         try:
-            data = json.loads(content)
+            data = self._json_object_from_text(content)
         except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", content, flags=re.DOTALL)
-            if not match:
-                raise RuntimeError("O Groq não retornou JSON com as pesquisas de vídeo.")
-            data = json.loads(match.group(0))
+            raise RuntimeError("O Groq não retornou JSON com as pesquisas de vídeo.")
         queries = data.get("queries")
         if not isinstance(queries, list):
             raise RuntimeError("O Groq não retornou a lista 'queries'.")
