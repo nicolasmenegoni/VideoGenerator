@@ -1747,7 +1747,7 @@ class VideoGeneratorApp:
             duration = audio_duration
         else:
             duration = audio_duration
-        video_filter = self._video_filter(subtitle_text, clip_path.with_suffix(".subtitle.txt"))
+        video_filter = self._video_filter(subtitle_text, clip_path.with_suffix(".subtitle.ass"), duration, audio_duration)
         filter_complex = (
             f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[v];"
             f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
@@ -1807,38 +1807,126 @@ class VideoGeneratorApp:
             )
         self._run_ffmpeg(cmd)
 
-    def _video_filter(self, subtitle_text: str, subtitle_file: Path | None = None) -> str:
+    def _video_filter(
+        self,
+        subtitle_text: str,
+        subtitle_file: Path | None = None,
+        clip_duration: float = 0.0,
+        speech_duration: float = 0.0,
+    ) -> str:
         base_filter = f"scale={VIDEO_SIZE}:force_original_aspect_ratio=increase,crop={VIDEO_SIZE},setsar=1,format=yuv420p"
         if self.subtitle_enabled.get() != "Sim":
             return base_filter
-        font = self._escape_drawtext(self.subtitle_font.get().strip() or "Arial")
         wrapped_text, font_size, line_spacing, box_border = self._subtitle_layout(subtitle_text)
         if subtitle_file is None:
-            subtitle_file = Path(tempfile.gettempdir()) / "videogenerator_subtitle.txt"
-        subtitle_file.write_text(wrapped_text, encoding="utf-8")
-        textfile = self._escape_drawtext_file_path(subtitle_file)
-        font_color = self._ffmpeg_color(self.subtitle_color.get(), "0xFFFFFF")
-        y_expr = self._subtitle_y_expression()
-        box_enabled = "1" if self.subtitle_background.get() == "Sim" else "0"
-        box_color = self._ffmpeg_color(self.subtitle_background_color.get(), "0x000000")
-        outline_color = self._ffmpeg_color(self.subtitle_outline_color.get(), "0x000000")
-        drawtext = (
-            "drawtext="
-            f"font='{font}':"
-            f"textfile='{textfile}':"
-            f"fontcolor={font_color}:"
-            f"fontsize={font_size}:"
-            f"box={box_enabled}:"
-            f"boxcolor={box_color}@0.70:"
-            f"boxborderw={box_border}:"
-            "borderw=3:"
-            f"bordercolor={outline_color}:"
-            f"line_spacing={line_spacing}:"
-            "fix_bounds=1:"
-            "x=max(80\\,min((w-text_w)/2\\,w-text_w-80)):"
-            f"y={y_expr}"
+            subtitle_file = Path(tempfile.gettempdir()) / "videogenerator_subtitle.ass"
+        self._write_progressive_subtitle_file(
+            subtitle_file,
+            subtitle_text,
+            max(clip_duration, speech_duration, 0.1),
+            max(min(speech_duration, clip_duration or speech_duration), 0.1),
+            font_size,
+            line_spacing,
+            box_border,
         )
-        return f"{base_filter},{drawtext}"
+        subtitle_path = self._escape_filter_file_path(subtitle_file)
+        return f"{base_filter},subtitles='{subtitle_path}'"
+
+    def _write_progressive_subtitle_file(
+        self,
+        subtitle_file: Path,
+        subtitle_text: str,
+        clip_duration: float,
+        speech_duration: float,
+        font_size: int,
+        line_spacing: int,
+        box_border: int,
+    ) -> None:
+        words = subtitle_text.split()
+        if not words:
+            subtitle_file.write_text("", encoding="utf-8")
+            return
+        font = self.subtitle_font.get().strip() or "Arial Black"
+        primary = self._ass_color(self.subtitle_color.get(), "#FFFFFF")
+        outline = self._ass_color(self.subtitle_outline_color.get(), "#000000")
+        back = self._ass_color(self.subtitle_background_color.get(), "#000000", alpha="70")
+        border_style = 3 if self.subtitle_background.get() == "Sim" else 1
+        outline_width = max(1, box_border if border_style == 3 else 3)
+        alignment = self._ass_alignment()
+        margin_v = self._ass_margin_v()
+        spacing = -max(0, int(font_size * 0.10) - line_spacing)
+        speech_duration = max(0.1, min(speech_duration, clip_duration))
+        word_duration = max(speech_duration / len(words), 0.04)
+        events: list[str] = []
+        for index in range(1, len(words) + 1):
+            start = (index - 1) * word_duration
+            end = index * word_duration if index < len(words) else clip_duration
+            if end <= start:
+                end = start + 0.05
+            visible_text = self._wrap_subtitle_text(" ".join(words[:index]), font_size).replace("\n", r"\N")
+            events.append(
+                f"Dialogue: 0,{self._ass_timestamp(start)},{self._ass_timestamp(end)},Default,,0,0,0,,{self._escape_ass_text(visible_text)}"
+            )
+        ass_text = "\n".join(
+            [
+                "[Script Info]",
+                "ScriptType: v4.00+",
+                "PlayResX: 1080",
+                "PlayResY: 1920",
+                "ScaledBorderAndShadow: yes",
+                "WrapStyle: 2",
+                "",
+                "[V4+ Styles]",
+                "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+                f"Style: Default,{font},{font_size},{primary},{primary},{outline},{back},-1,0,0,0,100,100,{spacing},0,{border_style},{outline_width},0,{alignment},80,80,{margin_v},1",
+                "",
+                "[Events]",
+                "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+                *events,
+                "",
+            ]
+        )
+        subtitle_file.write_text(ass_text, encoding="utf-8")
+
+    def _ass_alignment(self) -> int:
+        position = self.subtitle_position.get()
+        if position == "Topo":
+            return 8
+        if position == "Centro":
+            return 5
+        return 2
+
+    def _ass_margin_v(self) -> int:
+        position = self.subtitle_position.get()
+        if position == "Topo":
+            return 120
+        if position == "Centro":
+            return 0
+        return 240
+
+    @staticmethod
+    def _ass_timestamp(seconds: float) -> str:
+        safe_seconds = max(seconds, 0.0)
+        hours = int(safe_seconds // 3600)
+        minutes = int((safe_seconds % 3600) // 60)
+        whole_seconds = int(safe_seconds % 60)
+        centiseconds = int(round((safe_seconds - int(safe_seconds)) * 100))
+        if centiseconds >= 100:
+            whole_seconds += 1
+            centiseconds = 0
+        return f"{hours}:{minutes:02d}:{whole_seconds:02d}.{centiseconds:02d}"
+
+    @staticmethod
+    def _escape_ass_text(value: str) -> str:
+        return value.replace("{", "(").replace("}", ")")
+
+    def _ass_color(self, value: str, fallback: str, alpha: str = "00") -> str:
+        color = self._normalize_color(value, fallback)
+        red = color[1:3]
+        green = color[3:5]
+        blue = color[5:7]
+        return f"&H{alpha}{blue}{green}{red}"
+
 
     def _subtitle_y_expression(self) -> str:
         position = self.subtitle_position.get()
@@ -1889,6 +1977,10 @@ class VideoGeneratorApp:
 
     @staticmethod
     def _escape_drawtext_file_path(value: Path) -> str:
+        return value.resolve().as_posix().replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+
+    @staticmethod
+    def _escape_filter_file_path(value: Path) -> str:
         return value.resolve().as_posix().replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
     @staticmethod
