@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import ctypes
 import html
 import json
-import importlib
 import queue
 import time
 import re
@@ -113,18 +111,6 @@ class VideoGeneratorApp:
         self.status_text = StringVar(value="Pronto.")
         self.progress_text = StringVar(value="")
         self.chatgpt_window_ready = False
-        self.chatgpt_audio_process_names = {
-            "chatgpt",
-            "openai",
-            "msedgewebview2",
-            "applicationframehost",
-            "chrome",
-            "msedge",
-            "firefox",
-            "brave",
-            "opera",
-            "vivaldi",
-        }
         self.media_preview_images: dict[str, ImageTk.PhotoImage] = {}
         self.media_preview_bytes: dict[str, bytes] = {}
         self.media_preview_loading: set[str] = set()
@@ -812,18 +798,8 @@ class VideoGeneratorApp:
         response_capture, local_menu_point = self._wait_for_response_more_button(sent_capture, wait_seconds)
         menu_point = self._to_screen(response_capture, local_menu_point)
         record_duration = self._estimated_tts_duration(text)
-        min_rms = 0.00003
 
-        rms = self._play_read_aloud_and_record(response_capture, menu_point, output_path, record_duration, preserve_unknown_sessions=True)
-        if rms < min_rms:
-            self.message_queue.put(("status", "Áudio ficou silencioso; tentando gravar novamente sem silenciar sessões desconhecidas..."))
-            rms = self._play_read_aloud_and_record(response_capture, menu_point, output_path, record_duration, preserve_unknown_sessions=False)
-        if rms < min_rms:
-            self.message_queue.put((
-                "status",
-                "A gravação ficou muito baixa, mas o áudio foi mantido para não interromper a geração. "
-                "Se a frase sair muda, aumente o volume do ChatGPT/Windows e tente novamente.",
-            ))
+        self._play_read_aloud_and_record(response_capture, menu_point, output_path, record_duration)
 
     def _play_read_aloud_and_record(
         self,
@@ -831,7 +807,6 @@ class VideoGeneratorApp:
         menu_point: ScreenPoint,
         output_path: Path,
         record_duration: float,
-        preserve_unknown_sessions: bool,
     ) -> float:
         pyautogui.click(menu_point.x, menu_point.y)
         time.sleep(self._safe_float(self.chatgpt_menu_wait.get(), 1.0, 0.2, 10.0))
@@ -841,8 +816,7 @@ class VideoGeneratorApp:
             pyautogui.click(read_point.x, read_point.y)
             time.sleep(0.05)
 
-        with self._chatgpt_audio_only(preserve_unknown_sessions=preserve_unknown_sessions):
-            return self._record_system_audio(output_path, record_duration, on_ready=start_read_aloud)
+        return self._record_system_audio(output_path, record_duration, on_ready=start_read_aloud)
 
     def _capture_chatgpt_window(self) -> WindowCapture:
         window = None
@@ -1137,73 +1111,28 @@ class VideoGeneratorApp:
                     components.append(ScreenBounds(min_x, min_y, max_x + 1, max_y + 1))
         return components
 
-    @contextmanager
-    def _chatgpt_audio_only(self, preserve_unknown_sessions: bool = False):
-        restored_sessions: list[tuple[Any, int, float]] = []
-        if sys.platform != "win32":
-            yield
-            return
-
-        chatgpt_pid = self._active_window_process_id()
-        pycaw_module = importlib.import_module("pycaw.pycaw")
-        audio_utilities = pycaw_module.AudioUtilities
-        simple_audio_volume = pycaw_module.ISimpleAudioVolume
-        for session in audio_utilities.GetAllSessions():
-            process = getattr(session, "Process", None)
-            process_id = getattr(process, "pid", None) if process else None
-            process_name = process.name().lower() if process else ""
-            volume = session._ctl.QueryInterface(simple_audio_volume)
-            if preserve_unknown_sessions and not process_name:
-                if volume.GetMute():
-                    volume.SetMute(0, None)
-                continue
-            if self._is_chatgpt_audio_session(process_name, process_id, chatgpt_pid):
-                self._remember_chatgpt_audio_process(process_name)
-                if volume.GetMute():
-                    volume.SetMute(0, None)
-                continue
-            restored_sessions.append((volume, volume.GetMute(), volume.GetMasterVolume()))
-            volume.SetMasterVolume(0.0, None)
-            volume.SetMute(1, None)
-
+    def _default_loopback_microphone(self) -> Any:
+        speaker = sc.default_speaker()
+        speaker_name = str(getattr(speaker, "name", speaker))
         try:
-            yield
-        finally:
-            for volume, muted, master_volume in restored_sessions:
-                volume.SetMasterVolume(master_volume, None)
-                volume.SetMute(muted, None)
-
-    def _active_window_process_id(self) -> int | None:
-        if sys.platform != "win32":
-            return None
-        window_handle = None
-        try:
-            window = pyautogui.getActiveWindow() if hasattr(pyautogui, "getActiveWindow") else None
-            window_handle = getattr(window, "_hWnd", None) or getattr(window, "_hwnd", None) or getattr(window, "hWnd", None)
+            microphone = sc.get_microphone(id=speaker_name, include_loopback=True)
+            if microphone is not None:
+                return microphone
         except Exception:
-            window_handle = None
-        if not window_handle:
-            return None
-        try:
-            process_id = ctypes.c_ulong()
-            ctypes.windll.user32.GetWindowThreadProcessId(int(window_handle), ctypes.byref(process_id))
-            return int(process_id.value) or None
-        except Exception:
-            return None
+            pass
 
-    def _is_chatgpt_audio_session(self, process_name: str, process_id: int | None, chatgpt_pid: int | None) -> bool:
-        if chatgpt_pid is not None and process_id == chatgpt_pid:
-            return True
-        return self._is_chatgpt_process(process_name)
-
-    def _is_chatgpt_process(self, process_name: str) -> bool:
-        normalized = process_name.lower()
-        return any(known_name in normalized for known_name in self.chatgpt_audio_process_names)
-
-    def _remember_chatgpt_audio_process(self, process_name: str) -> None:
-        normalized = process_name.lower()
-        if normalized:
-            self.chatgpt_audio_process_names.add(normalized)
+        microphones = list(sc.all_microphones(include_loopback=True))
+        speaker_words = {word for word in re.split(r"\W+", speaker_name.lower()) if len(word) >= 3}
+        loopback_microphones = [microphone for microphone in microphones if "loopback" in str(getattr(microphone, "name", microphone)).lower()]
+        for microphone in loopback_microphones or microphones:
+            microphone_name = str(getattr(microphone, "name", microphone)).lower()
+            if speaker_words and any(word in microphone_name for word in speaker_words):
+                return microphone
+        if loopback_microphones:
+            return loopback_microphones[0]
+        if microphones:
+            return microphones[0]
+        raise RuntimeError("Não encontrei um dispositivo de gravação loopback para capturar o áudio do sistema.")
 
     @contextmanager
     def _continuous_loopback_recorder(self):
@@ -1214,8 +1143,7 @@ class VideoGeneratorApp:
             yield
             return
 
-        speaker = sc.default_speaker()
-        microphone = sc.get_microphone(id=str(speaker.name), include_loopback=True)
+        microphone = self._default_loopback_microphone()
         stop_event = threading.Event()
         lock = threading.Lock()
         self._loopback_chunks: list[np.ndarray] = []
@@ -1300,8 +1228,7 @@ class VideoGeneratorApp:
                     consume_chunk(chunk)
         else:
             chunk_frames = int(sample_rate * chunk_seconds)
-            speaker = sc.default_speaker()
-            microphone = sc.get_microphone(id=str(speaker.name), include_loopback=True)
+            microphone = self._default_loopback_microphone()
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message="data discontinuity in recording.*")
                 with microphone.recorder(samplerate=sample_rate) as recorder:
