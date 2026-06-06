@@ -1,14 +1,14 @@
-import base64
 import sys
 import types
+from io import BytesIO
+
+from PIL import Image
 
 # A automação de desktop exige dependências reais; os testes exercitam só helpers puros/API.
 sys.modules.setdefault("pyautogui", types.SimpleNamespace())
 sys.modules.setdefault("soundcard", types.SimpleNamespace())
 
-import requests
-
-from app import VideoGeneratorApp
+from app import LOCAL_IMAGE_HEIGHT, LOCAL_IMAGE_WIDTH, VideoGeneratorApp
 
 
 class Value:
@@ -19,18 +19,23 @@ class Value:
         return self.value
 
 
-class FakeResponse:
-    def __init__(self, payload: dict, status_code: int = 200) -> None:
-        self.payload = payload
-        self.status_code = status_code
-        self.text = ""
+class FakePipelineResult:
+    def __init__(self, images: list[Image.Image]) -> None:
+        self.images = images
 
-    def raise_for_status(self) -> None:
-        if self.status_code >= 400:
-            raise requests.HTTPError(f"status {self.status_code}")
 
-    def json(self) -> dict:
-        return self.payload
+class FakePipeline:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def __call__(self, **kwargs: object) -> FakePipelineResult:
+        self.calls.append(kwargs)
+        return FakePipelineResult([Image.new("RGB", (8, 12), "purple")])
+
+
+def _decoded_png_size(image_bytes: bytes) -> tuple[int, int]:
+    with Image.open(BytesIO(image_bytes)) as image:
+        return image.size
 
 
 def test_clean_image_prompt_removes_wrappers_and_limits_size() -> None:
@@ -42,152 +47,59 @@ def test_clean_image_prompt_removes_wrappers_and_limits_size() -> None:
     assert len(VideoGeneratorApp._clean_image_prompt("x" * 1300)) == 1200
 
 
-def test_primary_civitai_model_file_prefers_model_file() -> None:
-    version = {
-        "files": [
-            {"name": "preview.jpeg", "type": "Image", "metadata": {"format": "JPEG"}},
-            {"name": "model.safetensors", "type": "Model", "metadata": {"format": "SafeTensor"}},
-        ]
-    }
-
-    file_info = VideoGeneratorApp._primary_civitai_model_file(version)
-
-    assert file_info["name"] == "model.safetensors"
-
-
-def test_forge_txt2img_sends_vertical_payload_and_decodes_image(monkeypatch) -> None:
+def test_local_image_device_auto_prefers_cuda() -> None:
     app = object.__new__(VideoGeneratorApp)
-    app.forge_api_url = Value("http://forge.local/")
-    calls = []
-    image_bytes = b"fake-png"
+    app.local_image_device = Value("Auto")
+    torch_module = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(is_available=lambda: True),
+        backends=types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: False)),
+    )
 
-    def fake_post(url: str, json: dict, timeout: int) -> FakeResponse:
-        calls.append({"url": url, "json": json, "timeout": timeout})
-        return FakeResponse({"images": [base64.b64encode(image_bytes).decode("ascii")]})
-
-    monkeypatch.setattr("app.requests.post", fake_post)
-
-    result = app._forge_txt2img("a cinematic prompt", checkpoint_name="model.safetensors")
-
-    assert result == image_bytes
-    assert calls[0]["url"] == "http://forge.local/sdapi/v1/txt2img"
-    assert calls[0]["json"]["width"] == 1080
-    assert calls[0]["json"]["height"] == 1920
-    assert calls[0]["json"]["override_settings"]["sd_model_checkpoint"] == "model.safetensors"
+    assert app._local_image_device(torch_module) == "cuda"
 
 
-def test_assert_forge_api_available_shows_friendly_connection_message(monkeypatch) -> None:
+def test_local_image_device_can_force_cpu() -> None:
     app = object.__new__(VideoGeneratorApp)
-    app.forge_api_url = Value("http://127.0.0.1:7860")
+    app.local_image_device = Value("CPU")
+    torch_module = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(is_available=lambda: True),
+        backends=types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: True)),
+    )
 
-    def fake_get(url: str, timeout: int) -> FakeResponse:
-        raise requests.ConnectionError("connection refused")
+    assert app._local_image_device(torch_module) == "cpu"
 
-    monkeypatch.setattr("app.requests.get", fake_get)
+
+def test_local_ai_txt2img_uses_vertical_local_pipeline_and_returns_png(monkeypatch) -> None:
+    app = object.__new__(VideoGeneratorApp)
+    app.local_image_steps = Value("12")
+    fake_pipeline = FakePipeline()
+    monkeypatch.setattr(app, "_load_local_image_pipeline", lambda: fake_pipeline)
+
+    image_bytes = app._local_ai_txt2img("a cinematic prompt")
+
+    assert _decoded_png_size(image_bytes) == (8, 12)
+    assert fake_pipeline.calls[0]["prompt"] == "a cinematic prompt"
+    assert fake_pipeline.calls[0]["width"] == LOCAL_IMAGE_WIDTH
+    assert fake_pipeline.calls[0]["height"] == LOCAL_IMAGE_HEIGHT
+    assert fake_pipeline.calls[0]["num_inference_steps"] == 12
+    assert "watermark" in fake_pipeline.calls[0]["negative_prompt"]
+
+
+def test_local_ai_txt2img_wraps_generation_errors(monkeypatch) -> None:
+    app = object.__new__(VideoGeneratorApp)
+    app.local_image_steps = Value("30")
+
+    def failing_pipeline(**_kwargs: object) -> object:
+        raise RuntimeError("out of memory")
+
+    monkeypatch.setattr(app, "_load_local_image_pipeline", lambda: failing_pipeline)
 
     try:
-        app._assert_forge_api_available()
+        app._local_ai_txt2img("a cinematic prompt")
     except RuntimeError as exc:
         message = str(exc)
     else:
-        raise AssertionError("A conexão com Forge deveria falhar no teste.")
+        raise AssertionError("A geração local deveria falhar no teste.")
 
-    assert "Não consegui conectar ao Forge WebUI" in message
-    assert "--api" in message
-    assert "http://127.0.0.1:7860" in message
-
-
-def test_forge_txt2img_wraps_connection_errors(monkeypatch) -> None:
-    app = object.__new__(VideoGeneratorApp)
-    app.forge_api_url = Value("http://127.0.0.1:7860")
-
-    def fake_post(url: str, json: dict, timeout: int) -> FakeResponse:
-        raise requests.ConnectionError("connection refused")
-
-    monkeypatch.setattr("app.requests.post", fake_post)
-
-    try:
-        app._forge_txt2img("a cinematic prompt")
-    except RuntimeError as exc:
-        message = str(exc)
-    else:
-        raise AssertionError("A geração deveria falhar quando o Forge está offline.")
-
-    assert "Não consegui conectar ao Forge WebUI" in message
+    assert "A IA local não conseguiu renderizar a imagem" in message
     assert "Detalhe técnico" in message
-
-
-def test_forge_launch_command_parts_accepts_forge_folder(tmp_path) -> None:
-    script = tmp_path / "webui-user.bat"
-    script.write_text("echo forge", encoding="utf-8")
-
-    command, cwd = VideoGeneratorApp._forge_launch_command_parts(str(tmp_path))
-
-    assert command.endswith("webui-user.bat")
-    assert cwd == tmp_path
-
-
-def test_ensure_forge_api_available_starts_configured_forge(monkeypatch) -> None:
-    app = object.__new__(VideoGeneratorApp)
-    app.forge_api_url = Value("http://127.0.0.1:7860")
-    app.forge_launch_command = Value("start-forge --api")
-    app._queue_status = lambda *_args, **_kwargs: None
-    calls = {"get": 0, "popen": []}
-
-    def fake_get(url: str, timeout: int) -> FakeResponse:
-        calls["get"] += 1
-        if calls["get"] == 1:
-            raise requests.ConnectionError("offline")
-        return FakeResponse({"models": []})
-
-    def fake_popen(command: str, **kwargs: object) -> object:
-        calls["popen"].append({"command": command, "kwargs": kwargs})
-        return object()
-
-    monkeypatch.setattr("app.requests.get", fake_get)
-    monkeypatch.setattr("app.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("app.time.sleep", lambda _seconds: None)
-
-    app._ensure_forge_api_available()
-
-    assert calls["popen"][0]["command"] == "start-forge --api"
-    assert calls["get"] == 2
-
-
-def test_append_forge_api_arg_adds_api_once() -> None:
-    assert VideoGeneratorApp._append_forge_api_arg("") == "--api"
-    assert VideoGeneratorApp._append_forge_api_arg("--xformers") == "--xformers --api"
-    assert VideoGeneratorApp._append_forge_api_arg("--api") == "--api"
-
-
-def test_ensure_forge_api_available_installs_and_starts_local_forge(monkeypatch, tmp_path) -> None:
-    app = object.__new__(VideoGeneratorApp)
-    app.forge_api_url = Value("http://127.0.0.1:7860")
-    app.forge_launch_command = Value("")
-    app.forge_install_dir = Value(str(tmp_path / "forge"))
-    app._queue_status = lambda *_args, **_kwargs: None
-    calls = {"get": 0, "install": 0, "start": []}
-
-    def fake_get(url: str, timeout: int) -> FakeResponse:
-        calls["get"] += 1
-        if calls["get"] == 1:
-            raise requests.ConnectionError("offline")
-        return FakeResponse({"models": []})
-
-    def fake_install() -> Path:
-        calls["install"] += 1
-        return tmp_path / "forge"
-
-    def fake_start(path: Path) -> None:
-        calls["start"].append(path)
-
-    monkeypatch.setattr("app.requests.get", fake_get)
-    monkeypatch.setattr(app, "_ensure_local_forge_installation", fake_install)
-    monkeypatch.setattr(app, "_start_forge_from_path", fake_start)
-    monkeypatch.setattr("app.time.sleep", lambda _seconds: None)
-
-    app._ensure_forge_api_available()
-
-    assert calls["install"] == 1
-    assert calls["start"] == [tmp_path / "forge"]
-    assert calls["get"] == 2
