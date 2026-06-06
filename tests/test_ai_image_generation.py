@@ -25,6 +25,10 @@ class FakeResponse:
         self.status_code = status_code
         self.text = ""
 
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"status {self.status_code}")
+
     def json(self) -> dict:
         return self.payload
 
@@ -111,3 +115,40 @@ def test_forge_txt2img_wraps_connection_errors(monkeypatch) -> None:
 
     assert "Não consegui conectar ao Forge WebUI" in message
     assert "Detalhe técnico" in message
+
+
+def test_forge_launch_command_parts_accepts_forge_folder(tmp_path) -> None:
+    script = tmp_path / "webui-user.bat"
+    script.write_text("echo forge", encoding="utf-8")
+
+    command, cwd = VideoGeneratorApp._forge_launch_command_parts(str(tmp_path))
+
+    assert command.endswith("webui-user.bat --api")
+    assert cwd == tmp_path
+
+
+def test_ensure_forge_api_available_starts_configured_forge(monkeypatch) -> None:
+    app = object.__new__(VideoGeneratorApp)
+    app.forge_api_url = Value("http://127.0.0.1:7860")
+    app.forge_launch_command = Value("start-forge --api")
+    app._queue_status = lambda *_args, **_kwargs: None
+    calls = {"get": 0, "popen": []}
+
+    def fake_get(url: str, timeout: int) -> FakeResponse:
+        calls["get"] += 1
+        if calls["get"] == 1:
+            raise requests.ConnectionError("offline")
+        return FakeResponse({"models": []})
+
+    def fake_popen(command: str, **kwargs: object) -> object:
+        calls["popen"].append({"command": command, "kwargs": kwargs})
+        return object()
+
+    monkeypatch.setattr("app.requests.get", fake_get)
+    monkeypatch.setattr("app.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("app.time.sleep", lambda _seconds: None)
+
+    app._ensure_forge_api_available()
+
+    assert calls["popen"][0]["command"] == "start-forge --api"
+    assert calls["get"] == 2

@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import base64
 import json
+import os
 import queue
 import time
 import re
@@ -92,6 +93,7 @@ class VideoGeneratorApp:
         self.pexels_key = StringVar()
         self.groq_key = StringVar()
         self.forge_api_url = StringVar(value="http://127.0.0.1:7860")
+        self.forge_launch_command = StringVar()
         self.civitai_key = StringVar()
         self.civitai_model_version_id = StringVar()
         self.forge_models_dir = StringVar()
@@ -237,6 +239,7 @@ class VideoGeneratorApp:
         self._labeled_entry(parent, "Pexels API", self.pexels_key, show="*")
         self._labeled_entry(parent, "Groq API", self.groq_key, show="*")
         self._labeled_entry(parent, "Forge WebUI API URL", self.forge_api_url)
+        self._labeled_entry(parent, "Comando para iniciar Forge (opcional)", self.forge_launch_command)
         self._labeled_entry(parent, "Civitai API Token (opcional)", self.civitai_key, show="*")
         self._labeled_entry(parent, "Civitai Model Version ID (opcional)", self.civitai_model_version_id)
         self._labeled_entry(parent, "Pasta de modelos do Forge (opcional)", self.forge_models_dir)
@@ -679,6 +682,7 @@ class VideoGeneratorApp:
                 self.pexels_key.set(data.get("pexels_key", ""))
                 self.groq_key.set(data.get("groq_key", ""))
                 self.forge_api_url.set(data.get("forge_api_url", self.forge_api_url.get()))
+                self.forge_launch_command.set(data.get("forge_launch_command", ""))
                 self.civitai_key.set(data.get("civitai_key", ""))
                 self.civitai_model_version_id.set(data.get("civitai_model_version_id", ""))
                 self.forge_models_dir.set(data.get("forge_models_dir", ""))
@@ -722,6 +726,7 @@ class VideoGeneratorApp:
             "pexels_key": self.pexels_key.get().strip(),
             "groq_key": self.groq_key.get().strip(),
             "forge_api_url": self.forge_api_url.get().strip(),
+            "forge_launch_command": self.forge_launch_command.get().strip(),
             "civitai_key": self.civitai_key.get().strip(),
             "civitai_model_version_id": self.civitai_model_version_id.get().strip(),
             "forge_models_dir": self.forge_models_dir.get().strip(),
@@ -1052,7 +1057,7 @@ class VideoGeneratorApp:
         try:
             line = self.lines[index]
             self._queue_status("Conferindo conexão com o Forge WebUI...", step=True)
-            self._assert_forge_api_available()
+            self._ensure_forge_api_available()
             self._queue_status("Criando prompt visual com Groq...", step=True)
             prompt = self._groq_image_prompt(index)
             self._queue_status("Preparando modelo do Civitai no Forge...", step=True)
@@ -1112,6 +1117,65 @@ class VideoGeneratorApp:
         return text[:1200]
 
 
+    def _ensure_forge_api_available(self) -> None:
+        try:
+            self._assert_forge_api_available()
+            return
+        except RuntimeError as first_error:
+            # Se o usuário informou um comando local, o app tenta subir o Forge automaticamente.
+            if not self._start_forge_from_config():
+                raise first_error
+
+        self._queue_status("Aguardando Forge WebUI iniciar com API...", step=False)
+        if self._wait_for_forge_api(timeout=90):
+            return
+        raise RuntimeError(self._forge_connection_error_message(RuntimeError("Forge não respondeu após iniciar o comando configurado.")))
+
+    def _start_forge_from_config(self) -> bool:
+        command = self.forge_launch_command.get().strip()
+        if not command:
+            return False
+
+        # Aceita tanto um comando completo quanto uma pasta do Forge contendo webui-user.bat/webui.sh.
+        launch_command, cwd = self._forge_launch_command_parts(command)
+        try:
+            subprocess.Popen(
+                launch_command,
+                cwd=str(cwd) if cwd else None,
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0) if os.name == "nt" else 0,
+            )
+        except OSError as exc:
+            raise RuntimeError(f"Não consegui iniciar o Forge com o comando configurado: {exc}") from exc
+        return True
+
+    @staticmethod
+    def _forge_launch_command_parts(command: str) -> tuple[str, Path | None]:
+        candidate = Path(command).expanduser()
+        if candidate.is_dir():
+            # Procura os scripts mais comuns do Forge dentro da pasta selecionada.
+            for script_name in ("webui-user.bat", "webui.bat", "webui-user.sh", "webui.sh"):
+                script_path = candidate / script_name
+                if script_path.exists():
+                    quoted = f'"{script_path}"' if " " in str(script_path) else str(script_path)
+                    return f"{quoted} --api", candidate
+        if candidate.exists():
+            quoted = f'"{candidate}"' if " " in str(candidate) else str(candidate)
+            return f"{quoted} --api", candidate.parent
+        return command, None
+
+    def _wait_for_forge_api(self, timeout: int) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                self._assert_forge_api_available()
+                return True
+            except RuntimeError:
+                time.sleep(2)
+        return False
+
     def _assert_forge_api_available(self) -> None:
         try:
             # Testa um endpoint leve antes de gastar tokens do Groq ou tentar gerar a imagem.
@@ -1128,7 +1192,9 @@ class VideoGeneratorApp:
             "Abra o Forge WebUI com a API habilitada antes de clicar em Gerar imagem "
             "(normalmente adicionando --api nos argumentos de inicialização). "
             "Depois confirme se a URL da aba APIs é a mesma exibida pelo Forge, por exemplo "
-            "http://127.0.0.1:7860.\n\n"
+            "http://127.0.0.1:7860. Se quiser que o app abra o Forge automaticamente, "
+            "preencha na aba APIs o campo Comando para iniciar Forge com o caminho do webui-user.bat "
+            "ou da pasta do Forge.\n\n"
             f"Detalhe técnico: {exc}"
         )
 
