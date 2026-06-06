@@ -19,10 +19,11 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Button, Canvas, Entry, Frame, Label, StringVar, Text, Tk, Toplevel, filedialog, messagebox, ttk
+from tkinter import font as tkfont
 
 import imageio_ffmpeg
 import numpy as np
-from PIL import Image, ImageTk
+from PIL import Image, ImageGrab, ImageTk
 import pyautogui
 import pyperclip
 import requests
@@ -34,6 +35,9 @@ VIDEO_SIZE = "1080:1920"
 FPS = "30"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 DEFAULT_SCRIPT_TEXT = "Hoje vamos falar sobre a China.\nEsse país é incrível.\nVamos te provar."
+CLIPBOARD_MEDIA_DIR = Path.home() / ".videogenerator_media"
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+LOCAL_MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
 
 
 @dataclass
@@ -91,6 +95,7 @@ class VideoGeneratorApp:
         self.subtitle_enabled = StringVar(value="Sim")
         self.subtitle_position = StringVar(value="Baixo")
         self.subtitle_color = StringVar(value="#FFFFFF")
+        self.subtitle_highlight_color = StringVar(value="#FFD84D")
         self.subtitle_size = StringVar(value="64")
         self.subtitle_background = StringVar(value="Sim")
         self.subtitle_background_color = StringVar(value="#000000")
@@ -414,6 +419,7 @@ class VideoGeneratorApp:
 
         self._option_row(controls, "Posição no video", self.subtitle_position, ["Baixo", "Centro", "Topo"])
         self._entry_row(controls, "Cor da legenda", self.subtitle_color, "Ex.: #FFFFFF")
+        self._entry_row(controls, "Cor de destaque", self.subtitle_highlight_color, "Cor da palavra falada no momento. Ex.: #FFD84D")
         self._entry_row(controls, "Tamanho", self.subtitle_size, "Ex.: 64")
         self._option_row(controls, "Fundo", self.subtitle_background, ["Sim", "Não"])
         self._entry_row(controls, "Cor do fundo", self.subtitle_background_color, "Ex.: #000000")
@@ -430,6 +436,7 @@ class VideoGeneratorApp:
             self.subtitle_enabled,
             self.subtitle_position,
             self.subtitle_color,
+            self.subtitle_highlight_color,
             self.subtitle_size,
             self.subtitle_background,
             self.subtitle_background_color,
@@ -480,17 +487,91 @@ class VideoGeneratorApp:
         position = self.subtitle_position.get()
         y = {"Topo": 96, "Centro": 250, "Baixo": 405}.get(position, 405)
         color = self._normalize_color(self.subtitle_color.get(), "#FFFFFF")
+        highlight_color = self._normalize_color(self.subtitle_highlight_color.get(), "#FFD84D")
         bg_color = self._normalize_color(self.subtitle_background_color.get(), "#000000")
         outline_color = self._normalize_color(self.subtitle_outline_color.get(), "#000000")
         font = self.subtitle_font.get().strip() or "Arial"
+        lines = self._preview_subtitle_lines(text, font, preview_size, 230)
+        line_height = max(preview_size + 5, int(preview_size * 1.25))
+        total_height = max(line_height, len(lines) * line_height)
+        start_y = y - total_height / 2 + line_height / 2
 
-        box_padding = max(8, preview_size * 2)
+        box_padding = max(8, int(preview_size * 0.65))
         if self.subtitle_background.get() == "Sim":
-            canvas.create_rectangle(24, y - box_padding, 276, y + box_padding, fill=bg_color, outline="")
+            canvas.create_rectangle(24, y - total_height / 2 - box_padding, 276, y + total_height / 2 + box_padding, fill=bg_color, outline="")
+        highlight_index = self._preview_highlight_index(text)
         outline_offset = max(1, min(2, preview_size // 8 or 1))
-        for dx, dy in [(-outline_offset, 0), (outline_offset, 0), (0, -outline_offset), (0, outline_offset), (-outline_offset, -outline_offset), (outline_offset, -outline_offset), (-outline_offset, outline_offset), (outline_offset, outline_offset)]:
-            canvas.create_text(150 + dx, y + dy, text=text, fill=outline_color, font=(font, preview_size, "bold"), width=230, justify="center")
-        canvas.create_text(150, y, text=text, fill=color, font=(font, preview_size, "bold"), width=230, justify="center")
+        for line_index, line_words in enumerate(lines):
+            current_y = int(start_y + line_index * line_height)
+            self._draw_preview_subtitle_line(
+                canvas,
+                line_words,
+                highlight_index,
+                150,
+                current_y,
+                font,
+                preview_size,
+                color,
+                highlight_color,
+                outline_color,
+                outline_offset,
+            )
+
+    @staticmethod
+    def _preview_highlight_index(text: str) -> int:
+        words = text.split()
+        if not words:
+            return 0
+        # O preview mostra uma palavra intermediária destacada para demonstrar o efeito durante a fala.
+        return min(max(len(words) // 2, 0), len(words) - 1)
+
+    @staticmethod
+    def _preview_subtitle_lines(text: str, font_name: str, font_size: int, max_width: int) -> list[list[tuple[int, str]]]:
+        words = [(index, word) for index, word in enumerate(text.split())]
+        if not words:
+            return [[(0, text)]]
+        measuring_font = tkfont.Font(family=font_name, size=font_size, weight="bold")
+        lines: list[list[tuple[int, str]]] = []
+        current: list[tuple[int, str]] = []
+        for indexed_word in words:
+            candidate = [*current, indexed_word]
+            candidate_text = " ".join(word for _index, word in candidate)
+            if current and measuring_font.measure(candidate_text) > max_width:
+                lines.append(current)
+                current = [indexed_word]
+            else:
+                current = candidate
+        if current:
+            lines.append(current)
+        return lines
+
+    @staticmethod
+    def _draw_preview_subtitle_line(
+        canvas: Canvas,
+        words: list[tuple[int, str]],
+        highlight_index: int,
+        center_x: int,
+        y: int,
+        font_name: str,
+        font_size: int,
+        color: str,
+        highlight_color: str,
+        outline_color: str,
+        outline_offset: int,
+    ) -> None:
+        measuring_font = tkfont.Font(family=font_name, size=font_size, weight="bold")
+        word_widths = [measuring_font.measure(word) for _index, word in words]
+        space_width = measuring_font.measure(" ")
+        total_width = sum(word_widths) + max(0, len(words) - 1) * space_width
+        current_x = center_x - total_width / 2
+        for (word_index, word), word_width in zip(words, word_widths, strict=True):
+            word_center = int(current_x + word_width / 2)
+            fill = highlight_color if word_index == highlight_index else color
+            # O contorno é desenhado palavra a palavra para o destaque manter o mesmo layout do vídeo final.
+            for dx, dy in [(-outline_offset, 0), (outline_offset, 0), (0, -outline_offset), (0, outline_offset), (-outline_offset, -outline_offset), (outline_offset, -outline_offset), (-outline_offset, outline_offset), (outline_offset, outline_offset)]:
+                canvas.create_text(word_center + dx, y + dy, text=word, fill=outline_color, font=(font_name, font_size, "bold"))
+            canvas.create_text(word_center, y, text=word, fill=fill, font=(font_name, font_size, "bold"))
+            current_x += word_width + space_width
 
     def _build_audio_tab(self, parent: Frame) -> None:
         top = Frame(parent, bg="#ffffff")
@@ -514,8 +595,8 @@ class VideoGeneratorApp:
             "Fluxo usado: abrir o ChatGPT pelo atalho, capturar a janela, localizar automaticamente o campo de texto "
             "e o botão Enviar pela imagem, enviar 'Apenas repita isso com aspas: [frase]', esperar a resposta pelo tempo configurado, "
             "aguardar todo esse tempo e só então procurar os 3 pontinhos novos da última resposta (horizontal ou vertical), "
-            "movendo o mouse sobre a área da resposta para revelar botões ocultos quando necessário, abrir o menu, "
-            "identificar a área nova e clicar em 'Ler em voz alta'."
+            "priorizar o candidato perto do fim da conversa, revelar botões ocultos quando necessário, "
+            "confirmar que o menu abriu perto do clique e então clicar em 'Ler em voz alta'."
         )
         Label(content, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
 
@@ -596,6 +677,7 @@ class VideoGeneratorApp:
                 self.subtitle_enabled.set(data.get("subtitle_enabled", self.subtitle_enabled.get()))
                 self.subtitle_position.set(data.get("subtitle_position", self.subtitle_position.get()))
                 self.subtitle_color.set(data.get("subtitle_color", self.subtitle_color.get()))
+                self.subtitle_highlight_color.set(data.get("subtitle_highlight_color", self.subtitle_highlight_color.get()))
                 self.subtitle_size.set(data.get("subtitle_size", self.subtitle_size.get()))
                 self.subtitle_background.set(data.get("subtitle_background", self.subtitle_background.get()))
                 self.subtitle_background_color.set(data.get("subtitle_background_color", self.subtitle_background_color.get()))
@@ -633,6 +715,7 @@ class VideoGeneratorApp:
             "subtitle_enabled": self.subtitle_enabled.get().strip(),
             "subtitle_position": self.subtitle_position.get().strip(),
             "subtitle_color": self.subtitle_color.get().strip(),
+            "subtitle_highlight_color": self.subtitle_highlight_color.get().strip(),
             "subtitle_size": self.subtitle_size.get().strip(),
             "subtitle_background": self.subtitle_background.get().strip(),
             "subtitle_background_color": self.subtitle_background_color.get().strip(),
@@ -734,6 +817,7 @@ class VideoGeneratorApp:
             Label(preview, text="Preview\nPexels", bg="#eef1f8", fg="#8b95a7", justify="center", font=("Segoe UI", 8, "bold")).pack(fill=BOTH, expand=True)
             return preview
 
+        # O preview usa a mesma área para links do Pexels e imagens coladas da área de transferência.
         image = self._load_media_preview(clean_url)
         if image:
             Label(preview, image=image, bg="#eef1f8").pack(fill=BOTH, expand=True)
@@ -748,6 +832,14 @@ class VideoGeneratorApp:
         if media_url in self.media_preview_images:
             return self.media_preview_images[media_url]
         image_bytes = self.media_preview_bytes.get(media_url)
+        local_path = self._local_media_path(media_url)
+        if not image_bytes and local_path and local_path.suffix.lower() in IMAGE_EXTENSIONS:
+            try:
+                # Imagens locais/coladas já estão no disco; ler direto evita uma chamada HTTP desnecessária.
+                image_bytes = local_path.read_bytes()
+                self.media_preview_bytes[media_url] = image_bytes
+            except OSError:
+                image_bytes = None
         if not image_bytes:
             return None
         try:
@@ -761,6 +853,10 @@ class VideoGeneratorApp:
             return None
 
     def _start_media_preview_load(self, media_url: str) -> None:
+        local_path = self._local_media_path(media_url)
+        if local_path:
+            self.media_preview_failed.add(media_url)
+            return
         if media_url in self.media_preview_loading or media_url in self.media_preview_failed:
             return
         self.media_preview_loading.add(media_url)
@@ -793,7 +889,7 @@ class VideoGeneratorApp:
     def _media_preview_url(self, media_url: str, api_key: str | None = None) -> str:
         parsed = urllib.parse.urlparse(media_url)
         suffix = Path(parsed.path).suffix.lower()
-        if suffix in {".jpg", ".jpeg", ".png", ".webp"}:
+        if suffix in IMAGE_EXTENSIONS:
             return media_url
         if "pexels.com" not in parsed.netloc:
             return ""
@@ -834,10 +930,79 @@ class VideoGeneratorApp:
                 return html.unescape(content_match.group(1))
         return ""
 
+    @staticmethod
+    def _local_media_path(media_url: str) -> Path | None:
+        clean_url = media_url.strip()
+        if not clean_url:
+            return None
+        parsed = urllib.parse.urlparse(clean_url)
+        if parsed.scheme == "file":
+            path = Path(urllib.parse.unquote(parsed.path))
+        elif parsed.scheme and len(parsed.scheme) == 1:
+            # No Windows, caminhos como C:\foto.png podem ser interpretados como scheme pelo urlparse.
+            path = Path(clean_url).expanduser()
+        elif parsed.scheme:
+            return None
+        else:
+            path = Path(clean_url).expanduser()
+        if path.exists() and path.suffix.lower() in LOCAL_MEDIA_EXTENSIONS:
+            return path
+        return None
+
+    @staticmethod
+    def _image_to_png_bytes(image: Image.Image) -> bytes:
+        output = BytesIO()
+        # PNG preserva bem imagens copiadas sem depender do formato original da área de transferência.
+        image.save(output, format="PNG")
+        return output.getvalue()
+
+    @classmethod
+    def _clipboard_image_bytes_from_value(cls, clipboard_value: Any) -> bytes | None:
+        if isinstance(clipboard_value, Image.Image):
+            return cls._image_to_png_bytes(clipboard_value)
+        if isinstance(clipboard_value, (list, tuple)):
+            for item in clipboard_value:
+                local_path = cls._local_media_path(str(item))
+                if local_path and local_path.suffix.lower() in IMAGE_EXTENSIONS:
+                    with Image.open(local_path) as image:
+                        return cls._image_to_png_bytes(image.convert("RGBA"))
+        return None
+
+    def _clipboard_image_bytes(self) -> bytes | None:
+        try:
+            # ImageGrab.grabclipboard lê imagens reais no clipboard (não apenas texto como pyperclip).
+            clipboard_value = ImageGrab.grabclipboard()
+        except Exception:
+            return None
+        return self._clipboard_image_bytes_from_value(clipboard_value)
+
+    def _save_clipboard_image(self, image_bytes: bytes, index: int) -> str:
+        CLIPBOARD_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+        filename = f"frase_{index + 1:03d}_{int(time.time() * 1000)}.png"
+        output_path = CLIPBOARD_MEDIA_DIR / filename
+        output_path.write_bytes(image_bytes)
+        return str(output_path)
+
     def _paste_line_link(self, index: int) -> None:
-        link = pyperclip.paste().strip()
+        image_bytes = self._clipboard_image_bytes()
+        if image_bytes:
+            media_path = self._save_clipboard_image(image_bytes, index)
+            self.used_media_urls.add(media_path)
+            self.lines[index].media_url = media_path
+            self.media_preview_bytes[media_path] = image_bytes
+            self.media_preview_images.pop(media_path, None)
+            self.media_preview_failed.discard(media_path)
+            self._render_lines()
+            self._save_config(show_status=False)
+            self.status_text.set(f"Imagem colada na frase {index + 1}.")
+            return
+
+        try:
+            link = pyperclip.paste().strip()
+        except Exception:
+            link = ""
         if not link:
-            messagebox.showerror(APP_TITLE, "A área de transferência está vazia. Copie um link do Pexels e clique em Colar link.")
+            messagebox.showerror(APP_TITLE, "A área de transferência está vazia. Copie um link do Pexels ou uma imagem e clique em Colar link.")
             return
         self.used_media_urls.add(link)
         self.lines[index].media_url = link
@@ -1162,10 +1327,33 @@ class VideoGeneratorApp:
         output_path: Path,
         record_duration: float,
     ) -> float:
-        pyautogui.click(menu_point.x, menu_point.y)
-        time.sleep(self._safe_float(self.chatgpt_menu_wait.get(), 1.0, 0.2, 10.0))
-        menu_capture = self._capture_chatgpt_window()
-        read_point = self._to_screen(menu_capture, self._find_read_aloud_point(response_capture.image, menu_capture.image, menu_point, menu_capture))
+        read_point: ScreenPoint | None = None
+        menu_capture: WindowCapture | None = None
+        attempts = [menu_point]
+        local_candidates = self._rank_response_more_candidates(response_capture.image, self._response_more_candidates(response_capture.image))
+        for local_candidate in local_candidates:
+            screen_candidate = self._to_screen(response_capture, local_candidate)
+            if not any(abs(screen_candidate.x - point.x) <= 8 and abs(screen_candidate.y - point.y) <= 8 for point in attempts):
+                attempts.append(screen_candidate)
+
+        for attempt in attempts[:5]:
+            pyautogui.press("esc")
+            time.sleep(0.08)
+            pyautogui.click(attempt.x, attempt.y)
+            time.sleep(self._safe_float(self.chatgpt_menu_wait.get(), 1.0, 0.2, 10.0))
+            candidate_capture = self._capture_chatgpt_window()
+            if not self._menu_component_near_click(response_capture.image, candidate_capture.image, attempt, candidate_capture):
+                continue
+            try:
+                read_point = self._to_screen(candidate_capture, self._find_read_aloud_point(response_capture.image, candidate_capture.image, attempt, candidate_capture))
+                menu_capture = candidate_capture
+                break
+            except RuntimeError:
+                continue
+
+        if read_point is None or menu_capture is None:
+            raise RuntimeError("Abri os 3 pontinhos, mas não consegui confirmar o menu de leitura em voz alta. Tente aumentar as esperas da aba Audio.")
+
         def start_read_aloud() -> None:
             pyautogui.click(read_point.x, read_point.y)
             time.sleep(0.05)
@@ -1421,9 +1609,28 @@ class VideoGeneratorApp:
         return candidates
 
     def _select_response_more_candidate(self, image: Any, candidates: list[ScreenPoint]) -> ScreenPoint:
-        bottom_y = max(point.y for point in candidates)
-        bottom_row = [point for point in candidates if abs(point.y - bottom_y) <= 8]
-        return max(bottom_row, key=lambda point: point.x)
+        ranked = self._rank_response_more_candidates(image, candidates)
+        return ranked[0]
+
+    def _rank_response_more_candidates(self, image: Any, candidates: list[ScreenPoint]) -> list[ScreenPoint]:
+        if not candidates:
+            return []
+        array = self._image_array(image)
+        height, width, _ = array.shape
+        try:
+            composer = self._find_chatgpt_composer(image)
+            preferred_bottom = composer.top - 10
+        except RuntimeError:
+            preferred_bottom = int(height * 0.82)
+
+        def score(point: ScreenPoint) -> tuple[int, int, int]:
+            # Pontua mais alto o botão da última resposta: próximo ao composer, na metade inferior e longe das bordas.
+            y_score = -abs(preferred_bottom - point.y)
+            lower_half_bonus = 120 if point.y >= int(height * 0.42) else 0
+            edge_penalty = -80 if point.x < int(width * 0.18) or point.x > int(width * 0.94) else 0
+            return (lower_half_bonus + edge_penalty + y_score, point.y, point.x)
+
+        return sorted(candidates, key=score, reverse=True)
 
     @staticmethod
     def _best_new_more_candidate(before_candidates: list[ScreenPoint], after_candidates: list[ScreenPoint]) -> ScreenPoint | None:
@@ -1463,6 +1670,14 @@ class VideoGeneratorApp:
         return max(scored_candidates, key=lambda item: (item[0], item[1].y))[1]
 
     def _find_read_aloud_point(self, before_image: Any, after_image: Any, clicked_menu_point: ScreenPoint, after_capture: WindowCapture) -> ScreenPoint:
+        component = self._menu_component_near_click(before_image, after_image, clicked_menu_point, after_capture)
+        if not component:
+            raise RuntimeError("O menu dos 3 pontinhos não apareceu perto do clique.")
+        read_x = component.left + min(max(int(component.width * 0.28), 70), component.width - 12)
+        read_y = component.bottom - min(max(component.height // 7, 24), 36)
+        return ScreenPoint(read_x, read_y)
+
+    def _menu_component_near_click(self, before_image: Any, after_image: Any, clicked_menu_point: ScreenPoint, after_capture: WindowCapture) -> ScreenBounds | None:
         before = self._image_array(before_image)
         after = self._image_array(after_image)
         min_height = min(before.shape[0], after.shape[0])
@@ -1470,20 +1685,16 @@ class VideoGeneratorApp:
         diff = np.abs(after[:min_height, :min_width] - before[:min_height, :min_width]).max(axis=2)
         changed_mask = diff > 25
         components = [component for component in self._components(changed_mask, min_area=120) if component.width > 30 and component.height > 12]
-
         local_click = ScreenPoint(clicked_menu_point.x - after_capture.offset_x, clicked_menu_point.y - after_capture.offset_y)
-        if components:
-            nearby = [
-                component
-                for component in components
-                if abs(component.center.x - local_click.x) <= 320 and abs(component.center.y - local_click.y) <= 320
-            ]
-            component = max(nearby or components, key=lambda bounds: bounds.width * bounds.height)
-            read_x = component.left + min(max(int(component.width * 0.28), 70), component.width - 12)
-            read_y = component.bottom - min(max(component.height // 7, 24), 36)
-            return ScreenPoint(read_x, read_y)
-
-        return ScreenPoint(local_click.x + 90, max(local_click.y - 55, 0))
+        nearby = [
+            component
+            for component in components
+            if abs(component.center.x - local_click.x) <= 340 and abs(component.center.y - local_click.y) <= 340
+        ]
+        if not nearby:
+            return None
+        # O menu é normalmente o maior retângulo novo perto dos 3 pontinhos clicados.
+        return max(nearby, key=lambda bounds: bounds.width * bounds.height)
 
     @staticmethod
     def _components(mask: np.ndarray, min_area: int = 1) -> list[ScreenBounds]:
@@ -1732,6 +1943,10 @@ class VideoGeneratorApp:
             self.used_media_urls.add(media_url)
             self.lines[index - 1].media_url = media_url
             self.root.after(0, self._render_lines)
+        local_path = self._local_media_path(media_url)
+        if local_path:
+            # Imagens coladas ficam salvas localmente e podem entrar direto no FFmpeg.
+            return local_path
         media_url = self._resolve_pexels_page_url(media_url)
         parsed = urllib.parse.urlparse(media_url)
         suffix = Path(parsed.path).suffix or ".mp4"
@@ -1940,6 +2155,7 @@ class VideoGeneratorApp:
             return
         font = self.subtitle_font.get().strip() or "Arial Black"
         primary = self._ass_color(self.subtitle_color.get(), "#FFFFFF")
+        highlight = self._ass_color(self.subtitle_highlight_color.get(), "#FFD84D")
         outline = self._ass_color(self.subtitle_outline_color.get(), "#000000")
         back = self._ass_color(self.subtitle_background_color.get(), "#000000", alpha="70")
         border_style = 3 if self.subtitle_background.get() == "Sim" else 1
@@ -1950,14 +2166,20 @@ class VideoGeneratorApp:
         speech_duration = max(0.1, min(speech_duration, clip_duration))
         word_duration = max(speech_duration / len(words), 0.04)
         events: list[str] = []
-        for index in range(1, len(words) + 1):
-            start = (index - 1) * word_duration
-            end = index * word_duration if index < len(words) else clip_duration
+        for index in range(len(words)):
+            start = index * word_duration
+            end = min((index + 1) * word_duration, speech_duration)
             if end <= start:
                 end = start + 0.05
-            visible_text = self._wrap_subtitle_text(" ".join(words[:index]), font_size).replace("\n", r"\N")
+            highlighted_text = self._highlighted_subtitle_text(words, index, font_size, primary, highlight)
             events.append(
-                f"Dialogue: 0,{self._ass_timestamp(start)},{self._ass_timestamp(end)},Default,,0,0,0,,{self._escape_ass_text(visible_text)}"
+                f"Dialogue: 0,{self._ass_timestamp(start)},{self._ass_timestamp(end)},Default,,0,0,0,,{highlighted_text}"
+            )
+        if clip_duration > speech_duration + 0.05:
+            # Após a narração terminar, a frase continua inteira na tela sem palavra destacada durante o respiro da cena.
+            normal_text = self._highlighted_subtitle_text(words, None, font_size, primary, highlight)
+            events.append(
+                f"Dialogue: 0,{self._ass_timestamp(speech_duration)},{self._ass_timestamp(clip_duration)},Default,,0,0,0,,{normal_text}"
             )
         ass_text = "\n".join(
             [
@@ -1970,7 +2192,7 @@ class VideoGeneratorApp:
                 "",
                 "[V4+ Styles]",
                 "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-                f"Style: Default,{font},{font_size},{primary},{primary},{outline},{back},-1,0,0,0,100,100,{spacing},0,{border_style},{outline_width},0,{alignment},80,80,{margin_v},1",
+                f"Style: Default,{font},{font_size},{primary},{highlight},{outline},{back},-1,0,0,0,100,100,{spacing},0,{border_style},{outline_width},0,{alignment},80,80,{margin_v},1",
                 "",
                 "[Events]",
                 "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -1979,6 +2201,45 @@ class VideoGeneratorApp:
             ]
         )
         subtitle_file.write_text(ass_text, encoding="utf-8")
+
+    def _highlighted_subtitle_text(
+        self,
+        words: list[str],
+        highlight_index: int | None,
+        font_size: int,
+        primary: str,
+        highlight: str,
+    ) -> str:
+        lines = self._subtitle_word_lines(words, font_size)
+        rendered_lines: list[str] = []
+        for line in lines:
+            rendered_words: list[str] = []
+            for word_index, word in line:
+                escaped_word = self._escape_ass_text(word)
+                if word_index == highlight_index:
+                    # Overrides ASS trocam apenas a cor da palavra atual e voltam para a cor normal no próximo token.
+                    rendered_words.append(f"{{\\c{highlight}&}}{escaped_word}{{\\c{primary}&}}")
+                else:
+                    rendered_words.append(escaped_word)
+            rendered_lines.append(" ".join(rendered_words))
+        return r"\N".join(rendered_lines)
+
+    @staticmethod
+    def _subtitle_word_lines(words: list[str], font_size: int) -> list[list[tuple[int, str]]]:
+        max_chars = max(20, min(48, int(980 / max(font_size * 0.48, 1))))
+        lines: list[list[tuple[int, str]]] = []
+        current: list[tuple[int, str]] = []
+        for index, word in enumerate(words):
+            candidate = [*current, (index, word)]
+            candidate_text = " ".join(item_word for _item_index, item_word in candidate)
+            if current and len(candidate_text) > max_chars:
+                lines.append(current)
+                current = [(index, word)]
+            else:
+                current = candidate
+        if current:
+            lines.append(current)
+        return lines
 
     def _ass_alignment(self) -> int:
         position = self.subtitle_position.get()
