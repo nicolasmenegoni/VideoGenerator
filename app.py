@@ -15,6 +15,7 @@ import threading
 import urllib.parse
 import warnings
 import wave
+import zipfile
 from io import BytesIO
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -39,6 +40,9 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 DEFAULT_SCRIPT_TEXT = "Hoje vamos falar sobre a China.\nEsse país é incrível.\nVamos te provar."
 CLIPBOARD_MEDIA_DIR = Path.home() / ".videogenerator_media"
 AI_IMAGE_DIR = Path.home() / ".videogenerator_ai_images"
+FORGE_INSTALL_DIR = Path.home() / ".videogenerator_forge" / "stable-diffusion-webui-forge"
+FORGE_REPO_URL = "https://github.com/lllyasviel/stable-diffusion-webui-forge.git"
+FORGE_ZIP_URL = "https://github.com/lllyasviel/stable-diffusion-webui-forge/archive/refs/heads/main.zip"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 LOCAL_MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
 
@@ -94,6 +98,7 @@ class VideoGeneratorApp:
         self.groq_key = StringVar()
         self.forge_api_url = StringVar(value="http://127.0.0.1:7860")
         self.forge_launch_command = StringVar()
+        self.forge_install_dir = StringVar(value=str(FORGE_INSTALL_DIR))
         self.civitai_key = StringVar()
         self.civitai_model_version_id = StringVar()
         self.forge_models_dir = StringVar()
@@ -240,6 +245,7 @@ class VideoGeneratorApp:
         self._labeled_entry(parent, "Groq API", self.groq_key, show="*")
         self._labeled_entry(parent, "Forge WebUI API URL", self.forge_api_url)
         self._labeled_entry(parent, "Comando para iniciar Forge (opcional)", self.forge_launch_command)
+        self._labeled_entry(parent, "Pasta de instalação automática do Forge", self.forge_install_dir)
         self._labeled_entry(parent, "Civitai API Token (opcional)", self.civitai_key, show="*")
         self._labeled_entry(parent, "Civitai Model Version ID (opcional)", self.civitai_model_version_id)
         self._labeled_entry(parent, "Pasta de modelos do Forge (opcional)", self.forge_models_dir)
@@ -683,6 +689,7 @@ class VideoGeneratorApp:
                 self.groq_key.set(data.get("groq_key", ""))
                 self.forge_api_url.set(data.get("forge_api_url", self.forge_api_url.get()))
                 self.forge_launch_command.set(data.get("forge_launch_command", ""))
+                self.forge_install_dir.set(data.get("forge_install_dir", self.forge_install_dir.get()))
                 self.civitai_key.set(data.get("civitai_key", ""))
                 self.civitai_model_version_id.set(data.get("civitai_model_version_id", ""))
                 self.forge_models_dir.set(data.get("forge_models_dir", ""))
@@ -727,6 +734,7 @@ class VideoGeneratorApp:
             "groq_key": self.groq_key.get().strip(),
             "forge_api_url": self.forge_api_url.get().strip(),
             "forge_launch_command": self.forge_launch_command.get().strip(),
+            "forge_install_dir": self.forge_install_dir.get().strip(),
             "civitai_key": self.civitai_key.get().strip(),
             "civitai_model_version_id": self.civitai_model_version_id.get().strip(),
             "forge_models_dir": self.forge_models_dir.get().strip(),
@@ -1122,14 +1130,22 @@ class VideoGeneratorApp:
             self._assert_forge_api_available()
             return
         except RuntimeError as first_error:
-            # Se o usuário informou um comando local, o app tenta subir o Forge automaticamente.
-            if not self._start_forge_from_config():
-                raise first_error
+            # Primeiro tenta o Forge já configurado pelo usuário; se não houver, instala localmente.
+            if self._start_forge_from_config():
+                wait_reason = "iniciar o comando configurado"
+            else:
+                self._queue_status("Instalando Forge WebUI localmente no Windows...", step=False)
+                try:
+                    install_dir = self._ensure_local_forge_installation()
+                    self._start_forge_from_path(install_dir)
+                    wait_reason = "instalar e iniciar o Forge local"
+                except Exception as install_error:  # noqa: BLE001 - mostra orientação amigável na UI
+                    raise RuntimeError(self._forge_install_error_message(first_error, install_error)) from install_error
 
         self._queue_status("Aguardando Forge WebUI iniciar com API...", step=False)
-        if self._wait_for_forge_api(timeout=90):
+        if self._wait_for_forge_api(timeout=900):
             return
-        raise RuntimeError(self._forge_connection_error_message(RuntimeError("Forge não respondeu após iniciar o comando configurado.")))
+        raise RuntimeError(self._forge_connection_error_message(RuntimeError(f"Forge não respondeu após {wait_reason}.")))
 
     def _start_forge_from_config(self) -> bool:
         command = self.forge_launch_command.get().strip()
@@ -1138,32 +1154,104 @@ class VideoGeneratorApp:
 
         # Aceita tanto um comando completo quanto uma pasta do Forge contendo webui-user.bat/webui.sh.
         launch_command, cwd = self._forge_launch_command_parts(command)
+        self._launch_forge_process(launch_command, cwd)
+        return True
+
+    def _ensure_local_forge_installation(self) -> Path:
+        install_dir = Path(self.forge_install_dir.get().strip() or str(FORGE_INSTALL_DIR)).expanduser()
+        if self._forge_script_in_dir(install_dir):
+            return install_dir
+
+        install_dir.parent.mkdir(parents=True, exist_ok=True)
+        if shutil.which("git"):
+            self._clone_forge_with_git(install_dir)
+        else:
+            self._download_forge_zip(install_dir)
+        if not self._forge_script_in_dir(install_dir):
+            raise RuntimeError("A instalação terminou, mas não encontrei webui-user.bat/webui.sh na pasta do Forge.")
+        self.forge_install_dir.set(str(install_dir))
+        return install_dir
+
+    def _clone_forge_with_git(self, install_dir: Path) -> None:
+        if install_dir.exists() and any(install_dir.iterdir()):
+            raise RuntimeError(f"A pasta de instalação não está vazia: {install_dir}")
+        # O Forge oficial é clonado localmente; o primeiro boot do webui-user baixa as dependências Python.
+        subprocess.run(
+            ["git", "clone", "--depth", "1", FORGE_REPO_URL, str(install_dir)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=300,
+        )
+
+    def _download_forge_zip(self, install_dir: Path) -> None:
+        if install_dir.exists() and any(install_dir.iterdir()):
+            raise RuntimeError(f"A pasta de instalação não está vazia: {install_dir}")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            zip_path = Path(temp_dir) / "forge.zip"
+            extract_dir = Path(temp_dir) / "extract"
+            # Fallback sem Git: baixa o ZIP do repositório oficial e extrai na pasta configurada.
+            with requests.get(FORGE_ZIP_URL, stream=True, timeout=120) as response:
+                response.raise_for_status()
+                with zip_path.open("wb") as file:
+                    shutil.copyfileobj(response.raw, file)
+            with zipfile.ZipFile(zip_path) as archive:
+                archive.extractall(extract_dir)
+            roots = [path for path in extract_dir.iterdir() if path.is_dir()]
+            if not roots:
+                raise RuntimeError("O ZIP do Forge não trouxe uma pasta extraível.")
+            shutil.move(str(roots[0]), str(install_dir))
+
+    def _start_forge_from_path(self, install_dir: Path) -> None:
+        script_path = self._forge_script_in_dir(install_dir)
+        if not script_path:
+            raise RuntimeError(f"Não encontrei o inicializador do Forge em: {install_dir}")
+        command, cwd = self._forge_launch_command_parts(str(script_path))
+        self._launch_forge_process(command, cwd)
+
+    def _launch_forge_process(self, command: str, cwd: Path | None) -> None:
+        env = os.environ.copy()
+        env["COMMANDLINE_ARGS"] = self._append_forge_api_arg(env.get("COMMANDLINE_ARGS", ""))
         try:
             subprocess.Popen(
-                launch_command,
+                command,
                 cwd=str(cwd) if cwd else None,
                 shell=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=env,
                 creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0) if os.name == "nt" else 0,
             )
         except OSError as exc:
-            raise RuntimeError(f"Não consegui iniciar o Forge com o comando configurado: {exc}") from exc
-        return True
+            raise RuntimeError(f"Não consegui iniciar o Forge: {exc}") from exc
+
+    @staticmethod
+    def _append_forge_api_arg(commandline_args: str) -> str:
+        args = commandline_args.strip()
+        if "--api" in args.split():
+            return args
+        return f"{args} --api".strip()
+
+    @staticmethod
+    def _forge_script_in_dir(directory: Path) -> Path | None:
+        for script_name in ("webui-user.bat", "webui.bat", "webui-user.sh", "webui.sh", "run.bat"):
+            script_path = directory / script_name
+            if script_path.exists():
+                return script_path
+        return None
 
     @staticmethod
     def _forge_launch_command_parts(command: str) -> tuple[str, Path | None]:
         candidate = Path(command).expanduser()
         if candidate.is_dir():
-            # Procura os scripts mais comuns do Forge dentro da pasta selecionada.
-            for script_name in ("webui-user.bat", "webui.bat", "webui-user.sh", "webui.sh"):
-                script_path = candidate / script_name
-                if script_path.exists():
-                    quoted = f'"{script_path}"' if " " in str(script_path) else str(script_path)
-                    return f"{quoted} --api", candidate
+            script_path = VideoGeneratorApp._forge_script_in_dir(candidate)
+            if script_path:
+                quoted = f'"{script_path}"' if " " in str(script_path) else str(script_path)
+                return quoted, candidate
         if candidate.exists():
             quoted = f'"{candidate}"' if " " in str(candidate) else str(candidate)
-            return f"{quoted} --api", candidate.parent
+            return quoted, candidate.parent
         return command, None
 
     def _wait_for_forge_api(self, timeout: int) -> bool:
@@ -1175,6 +1263,16 @@ class VideoGeneratorApp:
             except RuntimeError:
                 time.sleep(2)
         return False
+
+    def _forge_install_error_message(self, first_error: Exception, install_error: Exception) -> str:
+        return (
+            "Não consegui conectar nem instalar/iniciar o Forge WebUI automaticamente.\n\n"
+            "No Windows, o app tenta instalar o Forge localmente pela pasta configurada na aba APIs. "
+            "Se a instalação automática falhar, instale Python 3.10 e Git, ou preencha o campo "
+            "Comando para iniciar Forge com o caminho do webui-user.bat.\n\n"
+            f"Erro de conexão original: {first_error}\n\n"
+            f"Erro da instalação/inicialização: {install_error}"
+        )
 
     def _assert_forge_api_available(self) -> None:
         try:
@@ -1192,9 +1290,9 @@ class VideoGeneratorApp:
             "Abra o Forge WebUI com a API habilitada antes de clicar em Gerar imagem "
             "(normalmente adicionando --api nos argumentos de inicialização). "
             "Depois confirme se a URL da aba APIs é a mesma exibida pelo Forge, por exemplo "
-            "http://127.0.0.1:7860. Se quiser que o app abra o Forge automaticamente, "
-            "preencha na aba APIs o campo Comando para iniciar Forge com o caminho do webui-user.bat "
-            "ou da pasta do Forge.\n\n"
+            "http://127.0.0.1:7860. Se quiser usar uma instalação existente, preencha na aba APIs "
+            "o campo Comando para iniciar Forge com o caminho do webui-user.bat ou da pasta do Forge. "
+            "Se esse campo ficar vazio, o app tentará instalar o Forge na pasta de instalação automática.\n\n"
             f"Detalhe técnico: {exc}"
         )
 

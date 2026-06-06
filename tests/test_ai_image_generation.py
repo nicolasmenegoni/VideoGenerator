@@ -123,7 +123,7 @@ def test_forge_launch_command_parts_accepts_forge_folder(tmp_path) -> None:
 
     command, cwd = VideoGeneratorApp._forge_launch_command_parts(str(tmp_path))
 
-    assert command.endswith("webui-user.bat --api")
+    assert command.endswith("webui-user.bat")
     assert cwd == tmp_path
 
 
@@ -151,4 +151,43 @@ def test_ensure_forge_api_available_starts_configured_forge(monkeypatch) -> None
     app._ensure_forge_api_available()
 
     assert calls["popen"][0]["command"] == "start-forge --api"
+    assert calls["get"] == 2
+
+
+def test_append_forge_api_arg_adds_api_once() -> None:
+    assert VideoGeneratorApp._append_forge_api_arg("") == "--api"
+    assert VideoGeneratorApp._append_forge_api_arg("--xformers") == "--xformers --api"
+    assert VideoGeneratorApp._append_forge_api_arg("--api") == "--api"
+
+
+def test_ensure_forge_api_available_installs_and_starts_local_forge(monkeypatch, tmp_path) -> None:
+    app = object.__new__(VideoGeneratorApp)
+    app.forge_api_url = Value("http://127.0.0.1:7860")
+    app.forge_launch_command = Value("")
+    app.forge_install_dir = Value(str(tmp_path / "forge"))
+    app._queue_status = lambda *_args, **_kwargs: None
+    calls = {"get": 0, "install": 0, "start": []}
+
+    def fake_get(url: str, timeout: int) -> FakeResponse:
+        calls["get"] += 1
+        if calls["get"] == 1:
+            raise requests.ConnectionError("offline")
+        return FakeResponse({"models": []})
+
+    def fake_install() -> Path:
+        calls["install"] += 1
+        return tmp_path / "forge"
+
+    def fake_start(path: Path) -> None:
+        calls["start"].append(path)
+
+    monkeypatch.setattr("app.requests.get", fake_get)
+    monkeypatch.setattr(app, "_ensure_local_forge_installation", fake_install)
+    monkeypatch.setattr(app, "_start_forge_from_path", fake_start)
+    monkeypatch.setattr("app.time.sleep", lambda _seconds: None)
+
+    app._ensure_forge_api_available()
+
+    assert calls["install"] == 1
+    assert calls["start"] == [tmp_path / "forge"]
     assert calls["get"] == 2
