@@ -58,3 +58,16 @@ def test_more_button_ranking_prefers_latest_response_near_composer() -> None:
     ranked = app._rank_response_more_candidates(image, candidates)
 
     assert ranked[0] == ScreenPoint(700, 610)
+
+
+def test_more_button_detection_accepts_compact_svg_ellipsis() -> None:
+    app = object.__new__(VideoGeneratorApp)
+    image = Image.new("RGB", (1000, 900), "white")
+    # Simula um ícone de reticências conectado/antialiasado como alguns SVGs do ChatGPT.
+    for x in range(694, 717):
+        for y in range(606, 614):
+            image.putpixel((x, y), (80, 80, 80))
+
+    candidates = app._response_more_candidates(image)
+
+    assert any(abs(candidate.x - 705) <= 3 and abs(candidate.y - 610) <= 3 for candidate in candidates)

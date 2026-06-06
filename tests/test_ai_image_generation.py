@@ -58,6 +58,25 @@ def test_local_image_device_auto_prefers_cuda() -> None:
     assert app._local_image_device(torch_module) == "cuda"
 
 
+def test_local_image_device_cuda_requires_available_gpu() -> None:
+    app = object.__new__(VideoGeneratorApp)
+    app.local_image_device = Value("CUDA")
+    torch_module = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(is_available=lambda: False),
+        backends=types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: False)),
+    )
+
+    try:
+        app._local_image_device(torch_module)
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("CUDA selecionado deveria avisar quando não há GPU disponível.")
+
+    assert "CUDA está selecionada" in message
+    assert "GPU NVIDIA" in message
+
+
 def test_local_image_device_can_force_cpu() -> None:
     app = object.__new__(VideoGeneratorApp)
     app.local_image_device = Value("CPU")

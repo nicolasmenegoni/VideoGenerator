@@ -95,7 +95,7 @@ class VideoGeneratorApp:
         self.pexels_key = StringVar()
         self.groq_key = StringVar()
         self.local_image_model = StringVar(value=DEFAULT_LOCAL_IMAGE_MODEL)
-        self.local_image_device = StringVar(value="Auto")
+        self.local_image_device = StringVar(value="CUDA")
         self.local_image_steps = StringVar(value="30")
         self.video_title = StringVar(value="video_gerado")
         self.output_dir = StringVar(value=str(Path.home() / "Videos"))
@@ -241,7 +241,7 @@ class VideoGeneratorApp:
         self._labeled_entry(parent, "Pexels API", self.pexels_key, show="*")
         self._labeled_entry(parent, "Groq API", self.groq_key, show="*")
         self._labeled_entry(parent, "Modelo local de imagem (Hugging Face ou pasta)", self.local_image_model)
-        self._option_row(parent, "Dispositivo da IA local", self.local_image_device, ["Auto", "CUDA", "MPS", "CPU"])
+        self._option_row(parent, "Dispositivo da IA local", self.local_image_device, ["CUDA", "Auto", "MPS", "CPU"])
         self._labeled_entry(parent, "Passos da imagem local", self.local_image_steps)
 
         Button(parent, text="Salvar chaves", command=self._save_config, bg="#111827", fg="#ffffff", activebackground="#2a3446", activeforeground="#ffffff", relief="flat", padx=18, pady=10, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(16, 0))
@@ -682,7 +682,7 @@ class VideoGeneratorApp:
                 self.pexels_key.set(data.get("pexels_key", ""))
                 self.groq_key.set(data.get("groq_key", ""))
                 self.local_image_model.set(data.get("local_image_model", self.local_image_model.get()))
-                self.local_image_device.set(data.get("local_image_device", self.local_image_device.get()))
+                self.local_image_device.set(data.get("local_image_device", self.local_image_device.get()) or self.local_image_device.get())
                 self.local_image_steps.set(data.get("local_image_steps", self.local_image_steps.get()))
                 self.video_title.set(data.get("video_title", self.video_title.get()))
                 self.script_text_value = data.get("script_text", self.script_text_value)
@@ -1056,7 +1056,8 @@ class VideoGeneratorApp:
             prompt = self._groq_image_prompt(index)
             self._queue_status("Carregando modelo local de IA...", step=True)
             self._load_local_image_pipeline()
-            self._queue_status("Renderizando imagem localmente...", step=True)
+            device_label = self.local_image_pipeline_key[1].upper() if self.local_image_pipeline_key else self.local_image_device.get().strip()
+            self._queue_status(f"Renderizando imagem localmente com {device_label}...", step=True)
             image_bytes = self._local_ai_txt2img(prompt)
             media_path = self._save_ai_image(image_bytes, index)
             self.used_media_urls.update({line.media_url, media_path})
@@ -1140,6 +1141,12 @@ class VideoGeneratorApp:
             ) from exc
 
         pipeline = pipeline.to(device)
+        if device == "cuda" and hasattr(pipeline, "enable_xformers_memory_efficient_attention"):
+            try:
+                pipeline.enable_xformers_memory_efficient_attention()
+            except Exception:
+                # xFormers é opcional; se não estiver instalado, attention slicing ainda reduz memória.
+                pass
         if hasattr(pipeline, "enable_attention_slicing"):
             pipeline.enable_attention_slicing()
         self.local_image_pipeline = pipeline
@@ -1157,16 +1164,27 @@ class VideoGeneratorApp:
 
     def _local_image_device(self, torch_module: Any) -> str:
         selected = self.local_image_device.get().strip().lower()
+        cuda_available = getattr(torch_module.cuda, "is_available", lambda: False)()
+        mps_backend = getattr(getattr(torch_module, "backends", None), "mps", None)
+        mps_available = mps_backend is not None and getattr(mps_backend, "is_available", lambda: False)()
         if selected == "cuda":
-            return "cuda"
+            if cuda_available:
+                return "cuda"
+            raise RuntimeError(
+                "A opção CUDA está selecionada, mas o PyTorch não encontrou uma GPU NVIDIA disponível.\n\n"
+                "Para gerar com GPU, instale uma versão do PyTorch com CUDA no ambiente do app "
+                "e confirme que o driver NVIDIA está atualizado. Se quiser testar sem GPU, mude "
+                "Dispositivo da IA local para CPU ou Auto na aba APIs."
+            )
         if selected == "mps":
-            return "mps"
+            if mps_available:
+                return "mps"
+            raise RuntimeError("A opção MPS está selecionada, mas o PyTorch não encontrou GPU Apple MPS disponível.")
         if selected == "cpu":
             return "cpu"
-        if getattr(torch_module.cuda, "is_available", lambda: False)():
+        if cuda_available:
             return "cuda"
-        mps_backend = getattr(getattr(torch_module, "backends", None), "mps", None)
-        if mps_backend is not None and getattr(mps_backend, "is_available", lambda: False)():
+        if mps_available:
             return "mps"
         return "cpu"
 
@@ -1723,11 +1741,13 @@ class VideoGeneratorApp:
         except RuntimeError:
             bottom_limit = int(height * 0.82)
         y_positions = [
-            max(int(height * 0.42), bottom_limit - 40),
-            max(int(height * 0.35), bottom_limit - 95),
-            max(int(height * 0.28), bottom_limit - 155),
+            max(int(height * 0.42), bottom_limit - 30),
+            max(int(height * 0.38), bottom_limit - 70),
+            max(int(height * 0.34), bottom_limit - 115),
+            max(int(height * 0.28), bottom_limit - 170),
+            max(int(height * 0.22), bottom_limit - 235),
         ]
-        x_positions = [int(width * 0.58), int(width * 0.66), int(width * 0.74)]
+        x_positions = [int(width * fraction) for fraction in (0.46, 0.54, 0.62, 0.70, 0.78, 0.86)]
         captures: list[WindowCapture] = []
         for y in y_positions:
             for x in x_positions:
@@ -1777,8 +1797,13 @@ class VideoGeneratorApp:
         candidates: list[ScreenPoint] = []
 
         def add_candidate(candidate: ScreenPoint) -> None:
-            if not any(abs(candidate.x - existing.x) <= 3 and abs(candidate.y - existing.y) <= 3 for existing in candidates):
+            if not any(abs(candidate.x - existing.x) <= 5 and abs(candidate.y - existing.y) <= 5 for existing in candidates):
                 candidates.append(candidate)
+
+        for dot_mask in dot_masks:
+            for component in self._components(dot_mask, min_area=5):
+                if self._looks_like_more_icon_component(component):
+                    add_candidate(component.center)
 
         for first in centers:
             horizontal_neighbors = [point for point in centers if abs(point.y - first.y) <= 6 and 3 <= point.x - first.x <= 34]
@@ -1801,6 +1826,16 @@ class VideoGeneratorApp:
                     if 8 <= span <= 52 and max(first_gap, second_gap) <= min(first_gap, second_gap) * 2.6:
                         add_candidate(ScreenPoint(int(round((first.x + second.x + third.x) / 3)), (first.y + third.y) // 2))
         return candidates
+
+    @staticmethod
+    def _looks_like_more_icon_component(component: ScreenBounds) -> bool:
+        area = max(component.width * component.height, 1)
+        if area > 900:
+            return False
+        horizontal_icon = 10 <= component.width <= 46 and 2 <= component.height <= 20
+        vertical_icon = 2 <= component.width <= 20 and 10 <= component.height <= 46
+        compact_icon = 6 <= component.width <= 32 and 6 <= component.height <= 32
+        return horizontal_icon or vertical_icon or compact_icon
 
     def _select_response_more_candidate(self, image: Any, candidates: list[ScreenPoint]) -> ScreenPoint:
         ranked = self._rank_response_more_candidates(image, candidates)

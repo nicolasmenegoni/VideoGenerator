@@ -20,7 +20,7 @@ python app.py
 
 No Linux/macOS use `source .venv/bin/activate` no lugar do comando de ativação do Windows.
 
-Para usar **Gerar imagem**, o app carrega um modelo local via Diffusers/PyTorch no próprio processo. Configure na aba **APIs** um ID do Hugging Face ou uma pasta local no formato Diffusers em **Modelo local de imagem**, escolha **Auto/CUDA/MPS/CPU** e ajuste os passos se necessário. Na primeira execução, o Diffusers pode baixar o modelo para o cache local se houver internet; depois disso a renderização acontece localmente, sem servidor WebUI de geração de imagens.
+Para usar **Gerar imagem**, o app carrega um modelo local via Diffusers/PyTorch no próprio processo. Configure na aba **APIs** um ID do Hugging Face ou uma pasta local no formato Diffusers em **Modelo local de imagem**, deixe **CUDA** selecionado para gerar com GPU NVIDIA (ou use **Auto/MPS/CPU** se necessário) e ajuste os passos. Na primeira execução, o Diffusers baixa o modelo para o cache local — downloads de vários GB e avisos do Hugging Face são normais; depois disso a renderização acontece localmente, sem servidor WebUI de geração de imagens.
 
 ## Como gerar um `.exe` para Windows
 
@@ -34,7 +34,7 @@ O executável será criado em `dist/VideoGenerator.exe`.
 ## Uso
 
 1. Abra o app.
-2. Na aba **APIs**, informe as chaves do Pexels e do Groq. Para imagens com IA, informe também o **Modelo local de imagem** (ID do Hugging Face ou pasta local Diffusers), o **Dispositivo da IA local** e os **Passos da imagem local**. O app salva localmente as chaves e demais configurações quando você clica em **Salvar chaves**, sincroniza o roteiro, gera/atualiza vídeos ou fecha a janela.
+2. Na aba **APIs**, informe as chaves do Pexels e do Groq. Para imagens com IA, informe também o **Modelo local de imagem** (ID do Hugging Face ou pasta local Diffusers), mantenha **Dispositivo da IA local** em **CUDA** para usar GPU NVIDIA e ajuste os **Passos da imagem local**. O app salva localmente as chaves e demais configurações quando você clica em **Salvar chaves**, sincroniza o roteiro, gera/atualiza vídeos ou fecha a janela.
 3. Na aba **Roteiro**, preencha o **Titulo** e escreva uma frase por linha. O título será usado como nome do arquivo `.mp4`. Se quiser criar o texto automaticamente, clique em **Gerar roteiro** para o Groq gerar frases curtas com base no título.
 4. Clique em **Atualizar roteiro** para sincronizar as frases. O texto do roteiro gerado/manual e os links de mídia por frase são restaurados quando você fecha e abre o app novamente.
 5. Na aba **Video**, clique em **Atualizar videos** para o Groq analisar cada frase junto com o contexto do roteiro, criar pesquisas visuais para o Pexels mantendo o assunto principal do título/roteiro e preencher automaticamente os links e previews. Você também pode copiar um link do Pexels e clicar em **Colar link** ao lado da frase para aplicar direto da área de transferência; se a área de transferência contiver uma imagem, o app salva essa imagem localmente, aplica na frase e mostra no preview. Ao lado de **Colar link**, use **Gerar imagem** para o Groq criar um prompt visual com base na frase/contexto e a IA local renderizar uma imagem 9:16, salva localmente e aplicada na frase. O app carrega o preview pequeno da foto/vídeo/imagem em segundo plano quando consegue resolver a miniatura, sem travar a lista. Use **Gerar outro video** em uma frase para pedir ao Groq uma nova busca e trocar apenas aquele item, use **Editar** se quiser ajustar manualmente, ou deixe vazio para busca automática.
