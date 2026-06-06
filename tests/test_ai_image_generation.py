@@ -6,6 +6,8 @@ import types
 sys.modules.setdefault("pyautogui", types.SimpleNamespace())
 sys.modules.setdefault("soundcard", types.SimpleNamespace())
 
+import requests
+
 from app import VideoGeneratorApp
 
 
@@ -68,3 +70,44 @@ def test_forge_txt2img_sends_vertical_payload_and_decodes_image(monkeypatch) -> 
     assert calls[0]["json"]["width"] == 1080
     assert calls[0]["json"]["height"] == 1920
     assert calls[0]["json"]["override_settings"]["sd_model_checkpoint"] == "model.safetensors"
+
+
+def test_assert_forge_api_available_shows_friendly_connection_message(monkeypatch) -> None:
+    app = object.__new__(VideoGeneratorApp)
+    app.forge_api_url = Value("http://127.0.0.1:7860")
+
+    def fake_get(url: str, timeout: int) -> FakeResponse:
+        raise requests.ConnectionError("connection refused")
+
+    monkeypatch.setattr("app.requests.get", fake_get)
+
+    try:
+        app._assert_forge_api_available()
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("A conexão com Forge deveria falhar no teste.")
+
+    assert "Não consegui conectar ao Forge WebUI" in message
+    assert "--api" in message
+    assert "http://127.0.0.1:7860" in message
+
+
+def test_forge_txt2img_wraps_connection_errors(monkeypatch) -> None:
+    app = object.__new__(VideoGeneratorApp)
+    app.forge_api_url = Value("http://127.0.0.1:7860")
+
+    def fake_post(url: str, json: dict, timeout: int) -> FakeResponse:
+        raise requests.ConnectionError("connection refused")
+
+    monkeypatch.setattr("app.requests.post", fake_post)
+
+    try:
+        app._forge_txt2img("a cinematic prompt")
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("A geração deveria falhar quando o Forge está offline.")
+
+    assert "Não consegui conectar ao Forge WebUI" in message
+    assert "Detalhe técnico" in message

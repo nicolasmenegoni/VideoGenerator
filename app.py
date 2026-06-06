@@ -1043,7 +1043,7 @@ class VideoGeneratorApp:
             self._show_tab("apis")
             return
         self._save_config(show_status=False)
-        self.progress.configure(value=0, maximum=3)
+        self.progress.configure(value=0, maximum=4)
         self.progress_text.set("Gerando imagem...")
         self.status_text.set(f"Gerando imagem com IA para a frase {index + 1}...")
         threading.Thread(target=self._ai_image_generation_worker, args=(index,), daemon=True).start()
@@ -1051,6 +1051,8 @@ class VideoGeneratorApp:
     def _ai_image_generation_worker(self, index: int) -> None:
         try:
             line = self.lines[index]
+            self._queue_status("Conferindo conexão com o Forge WebUI...", step=True)
+            self._assert_forge_api_available()
             self._queue_status("Criando prompt visual com Groq...", step=True)
             prompt = self._groq_image_prompt(index)
             self._queue_status("Preparando modelo do Civitai no Forge...", step=True)
@@ -1108,6 +1110,27 @@ class VideoGeneratorApp:
         text = re.sub(r'^prompt\s*[:=-]\s*', "", text, flags=re.IGNORECASE).strip(' ,.;:[]{}"\'')
         text = text.replace('"', "")
         return text[:1200]
+
+
+    def _assert_forge_api_available(self) -> None:
+        try:
+            # Testa um endpoint leve antes de gastar tokens do Groq ou tentar gerar a imagem.
+            response = requests.get(f"{self._forge_api_base()}/sdapi/v1/sd-models", timeout=4)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise RuntimeError(self._forge_connection_error_message(exc)) from exc
+
+    def _forge_connection_error_message(self, exc: Exception) -> str:
+        base_url = self._forge_api_base() or "http://127.0.0.1:7860"
+        return (
+            "Não consegui conectar ao Forge WebUI.\n\n"
+            f"URL configurada: {base_url}\n\n"
+            "Abra o Forge WebUI com a API habilitada antes de clicar em Gerar imagem "
+            "(normalmente adicionando --api nos argumentos de inicialização). "
+            "Depois confirme se a URL da aba APIs é a mesma exibida pelo Forge, por exemplo "
+            "http://127.0.0.1:7860.\n\n"
+            f"Detalhe técnico: {exc}"
+        )
 
     def _ensure_civitai_checkpoint(self) -> str:
         version_id = self.civitai_model_version_id.get().strip()
@@ -1197,7 +1220,10 @@ class VideoGeneratorApp:
             # O Forge aceita trocar checkpoint por override quando o modelo já está instalado/baixado.
             payload["override_settings"] = {"sd_model_checkpoint": checkpoint_name}
             payload["override_settings_restore_afterwards"] = False
-        response = requests.post(f"{self._forge_api_base()}/sdapi/v1/txt2img", json=payload, timeout=300)
+        try:
+            response = requests.post(f"{self._forge_api_base()}/sdapi/v1/txt2img", json=payload, timeout=300)
+        except requests.RequestException as exc:
+            raise RuntimeError(self._forge_connection_error_message(exc)) from exc
         if response.status_code >= 400:
             raise RuntimeError(f"Erro do Forge WebUI ({response.status_code}): {response.text.strip()}")
         images = response.json().get("images", [])
