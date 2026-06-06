@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import base64
 import json
 import queue
 import time
@@ -36,6 +37,7 @@ FPS = "30"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 DEFAULT_SCRIPT_TEXT = "Hoje vamos falar sobre a China.\nEsse país é incrível.\nVamos te provar."
 CLIPBOARD_MEDIA_DIR = Path.home() / ".videogenerator_media"
+AI_IMAGE_DIR = Path.home() / ".videogenerator_ai_images"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 LOCAL_MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
 
@@ -89,6 +91,10 @@ class VideoGeneratorApp:
 
         self.pexels_key = StringVar()
         self.groq_key = StringVar()
+        self.forge_api_url = StringVar(value="http://127.0.0.1:7860")
+        self.civitai_key = StringVar()
+        self.civitai_model_version_id = StringVar()
+        self.forge_models_dir = StringVar()
         self.video_title = StringVar(value="video_gerado")
         self.output_dir = StringVar(value=str(Path.home() / "Videos"))
         self.video_extra_after_audio = StringVar(value="1")
@@ -226,10 +232,14 @@ class VideoGeneratorApp:
 
     def _build_api_tab(self, parent: Frame) -> None:
         ttk.Label(parent, text="Chaves de API", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(parent, text="As chaves do Pexels e do Groq ficam salvas localmente no seu usuário do Windows.", style="Muted.TLabel").pack(anchor="w", pady=(4, 22))
+        ttk.Label(parent, text="As chaves e endpoints ficam salvos localmente no seu usuário do Windows.", style="Muted.TLabel").pack(anchor="w", pady=(4, 22))
 
         self._labeled_entry(parent, "Pexels API", self.pexels_key, show="*")
         self._labeled_entry(parent, "Groq API", self.groq_key, show="*")
+        self._labeled_entry(parent, "Forge WebUI API URL", self.forge_api_url)
+        self._labeled_entry(parent, "Civitai API Token (opcional)", self.civitai_key, show="*")
+        self._labeled_entry(parent, "Civitai Model Version ID (opcional)", self.civitai_model_version_id)
+        self._labeled_entry(parent, "Pasta de modelos do Forge (opcional)", self.forge_models_dir)
 
         Button(parent, text="Salvar chaves", command=self._save_config, bg="#111827", fg="#ffffff", activebackground="#2a3446", activeforeground="#ffffff", relief="flat", padx=18, pady=10, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(16, 0))
 
@@ -668,6 +678,10 @@ class VideoGeneratorApp:
                 data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
                 self.pexels_key.set(data.get("pexels_key", ""))
                 self.groq_key.set(data.get("groq_key", ""))
+                self.forge_api_url.set(data.get("forge_api_url", self.forge_api_url.get()))
+                self.civitai_key.set(data.get("civitai_key", ""))
+                self.civitai_model_version_id.set(data.get("civitai_model_version_id", ""))
+                self.forge_models_dir.set(data.get("forge_models_dir", ""))
                 self.video_title.set(data.get("video_title", self.video_title.get()))
                 self.script_text_value = data.get("script_text", self.script_text_value)
                 self.lines = self._config_lines(data.get("script_lines", []))
@@ -707,6 +721,10 @@ class VideoGeneratorApp:
         data = {
             "pexels_key": self.pexels_key.get().strip(),
             "groq_key": self.groq_key.get().strip(),
+            "forge_api_url": self.forge_api_url.get().strip(),
+            "civitai_key": self.civitai_key.get().strip(),
+            "civitai_model_version_id": self.civitai_model_version_id.get().strip(),
+            "forge_models_dir": self.forge_models_dir.get().strip(),
             "video_title": self.video_title.get().strip(),
             "script_text": self.script_text_value,
             "script_lines": self._config_script_lines(),
@@ -806,6 +824,7 @@ class VideoGeneratorApp:
             buttons = Frame(row, bg="#ffffff")
             buttons.pack(side=RIGHT, padx=(12, 0))
             Button(buttons, text="Colar link", command=lambda idx=index: self._paste_line_link(idx), bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT)
+            Button(buttons, text="Gerar imagem", command=lambda idx=index: self._start_ai_image_generation(idx), bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(8, 0))
             Button(buttons, text="Gerar outro video", command=lambda idx=index: self._start_single_video_update(idx), bg="#eef1ff", fg="#27319f", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(8, 0))
             Button(buttons, text="Editar", command=lambda idx=index: self._edit_line_link(idx), bg="#eef1ff", fg="#27319f", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(8, 0))
 
@@ -1009,6 +1028,193 @@ class VideoGeneratorApp:
         self._render_lines()
         self._save_config(show_status=False)
         self.status_text.set(f"Link colado na frase {index + 1}.")
+
+    def _start_ai_image_generation(self, index: int) -> None:
+        self._refresh_lines()
+        if index < 0 or index >= len(self.lines):
+            messagebox.showerror(APP_TITLE, "Não encontrei essa frase no roteiro sincronizado.")
+            return
+        if not self.groq_key.get().strip():
+            messagebox.showerror(APP_TITLE, "Informe a chave de API do Groq na aba APIs.")
+            self._show_tab("apis")
+            return
+        if not self.forge_api_url.get().strip():
+            messagebox.showerror(APP_TITLE, "Informe a URL da API do Forge WebUI na aba APIs.")
+            self._show_tab("apis")
+            return
+        self._save_config(show_status=False)
+        self.progress.configure(value=0, maximum=3)
+        self.progress_text.set("Gerando imagem...")
+        self.status_text.set(f"Gerando imagem com IA para a frase {index + 1}...")
+        threading.Thread(target=self._ai_image_generation_worker, args=(index,), daemon=True).start()
+
+    def _ai_image_generation_worker(self, index: int) -> None:
+        try:
+            line = self.lines[index]
+            self._queue_status("Criando prompt visual com Groq...", step=True)
+            prompt = self._groq_image_prompt(index)
+            self._queue_status("Preparando modelo do Civitai no Forge...", step=True)
+            checkpoint_name = self._ensure_civitai_checkpoint()
+            self._queue_status("Renderizando imagem no Forge WebUI...", step=True)
+            image_bytes = self._forge_txt2img(prompt, checkpoint_name=checkpoint_name)
+            media_path = self._save_ai_image(image_bytes, index)
+            self.used_media_urls.update({line.media_url, media_path})
+            self.lines[index].media_url = media_path
+            self.media_preview_bytes[media_path] = image_bytes
+            self.media_preview_images.pop(media_path, None)
+            self.media_preview_failed.discard(media_path)
+            self.root.after(0, self._render_lines)
+            self.root.after(0, lambda: self._save_config(show_status=False))
+            self.message_queue.put(("done", f"Imagem gerada e aplicada na frase {index + 1}."))
+        except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
+            self.message_queue.put(("error", str(exc)))
+
+    def _groq_image_prompt(self, index: int) -> str:
+        context = "\n".join(f"{line_index}. {line.text}" for line_index, line in enumerate(self.lines, start=1))
+        prompt = (
+            "Crie um prompt em inglês para gerar uma imagem vertical 9:16 em Stable Diffusion/Forge. "
+            "A imagem deve representar a frase indicada e manter o tema central do roteiro. "
+            "Descreva cena, sujeito, ambiente, composição, iluminação e estilo cinematográfico/fotorrealista. "
+            "Evite texto, letras, logotipos, marcas d'água, molduras e elementos fora do contexto. "
+            "Responda somente JSON válido no formato {\"prompt\":\"...\"}.\n\n"
+            f"Título do vídeo / assunto principal: {self.video_title.get().strip() or 'video'}\n"
+            f"Palavras-chave do assunto: {self._script_subject_keywords()}\n"
+            f"Frase selecionada ({index + 1}): {self.lines[index].text}\n"
+            f"Roteiro completo:\n{context}"
+        )
+        content = self._groq_chat_content(
+            messages=[
+                {"role": "system", "content": "Você cria prompts visuais curtos e precisos para Stable Diffusion."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.45,
+            max_tokens=420,
+        )
+        try:
+            data = self._json_object_from_text(content)
+            raw_prompt = str(data.get("prompt", ""))
+        except json.JSONDecodeError:
+            raw_prompt = content
+        clean_prompt = self._clean_image_prompt(raw_prompt)
+        if not clean_prompt:
+            raise RuntimeError("O Groq não retornou um prompt de imagem.")
+        return clean_prompt
+
+    @staticmethod
+    def _clean_image_prompt(prompt: str) -> str:
+        # Mantém o prompt em uma linha para evitar payloads inválidos ou muito verbosos no Forge.
+        text = " ".join(str(prompt).replace("\n", " ").split()).strip(' ,.;:[]{}"\'')
+        # Remove wrappers comuns quando o modelo insiste em responder texto ao redor do JSON.
+        text = re.sub(r'^prompt\s*[:=-]\s*', "", text, flags=re.IGNORECASE).strip(' ,.;:[]{}"\'')
+        text = text.replace('"', "")
+        return text[:1200]
+
+    def _ensure_civitai_checkpoint(self) -> str:
+        version_id = self.civitai_model_version_id.get().strip()
+        if not version_id:
+            return ""
+
+        # O Civitai é usado para descobrir/baixar o checkpoint indicado pelo usuário.
+        response = requests.get(
+            f"https://civitai.com/api/v1/model-versions/{version_id}",
+            headers=self._civitai_headers(),
+            timeout=45,
+        )
+        response.raise_for_status()
+        version = response.json()
+        model_file = self._primary_civitai_model_file(version)
+        filename = str(model_file.get("name", f"civitai_{version_id}.safetensors")).strip()
+        download_url = str(model_file.get("downloadUrl", "")).strip()
+        if not download_url:
+            return filename
+
+        models_dir = Path(self.forge_models_dir.get()).expanduser() if self.forge_models_dir.get().strip() else None
+        if models_dir:
+            models_dir.mkdir(parents=True, exist_ok=True)
+            target = models_dir / filename
+            if not target.exists():
+                self._download_civitai_file(download_url, target)
+            self._refresh_forge_checkpoints()
+        return filename
+
+    @staticmethod
+    def _primary_civitai_model_file(version: dict[str, Any]) -> dict[str, Any]:
+        files = version.get("files", [])
+        if not isinstance(files, list) or not files:
+            raise RuntimeError("O Civitai não retornou arquivos para esse Model Version ID.")
+        # Preferimos checkpoints primários; se não existir, usamos o primeiro arquivo baixável.
+        for file_info in files:
+            metadata = file_info.get("metadata", {}) if isinstance(file_info, dict) else {}
+            file_type = str(file_info.get("type", "") if isinstance(file_info, dict) else "").lower()
+            format_name = str(metadata.get("format", "")).lower() if isinstance(metadata, dict) else ""
+            if isinstance(file_info, dict) and (file_type == "model" or format_name in {"safetensor", "safetensors", "pickle"}):
+                return file_info
+        first_file = files[0]
+        if not isinstance(first_file, dict):
+            raise RuntimeError("O Civitai retornou um arquivo inválido para download.")
+        return first_file
+
+    def _civitai_headers(self) -> dict[str, str]:
+        headers = {"User-Agent": APP_TITLE}
+        token = self.civitai_key.get().strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
+
+    def _download_civitai_file(self, download_url: str, target: Path) -> None:
+        url = download_url
+        token = self.civitai_key.get().strip()
+        if token and "token=" not in url:
+            separator = "&" if "?" in url else "?"
+            url = f"{url}{separator}token={urllib.parse.quote(token)}"
+        temp_target = target.with_suffix(target.suffix + ".download")
+        with requests.get(url, headers=self._civitai_headers(), stream=True, timeout=120) as response:
+            response.raise_for_status()
+            with temp_target.open("wb") as file:
+                shutil.copyfileobj(response.raw, file)
+        temp_target.replace(target)
+
+    def _refresh_forge_checkpoints(self) -> None:
+        try:
+            requests.post(f"{self._forge_api_base()}/sdapi/v1/refresh-checkpoints", timeout=20).raise_for_status()
+        except requests.RequestException:
+            # A geração ainda pode funcionar se o Forge já conhece o checkpoint.
+            return
+
+    def _forge_txt2img(self, prompt: str, checkpoint_name: str = "") -> bytes:
+        payload: dict[str, Any] = {
+            "prompt": prompt,
+            "negative_prompt": "text, letters, logo, watermark, blurry, low quality, distorted, deformed, bad anatomy",
+            "steps": 28,
+            "cfg_scale": 7,
+            "sampler_name": "DPM++ 2M",
+            "width": 1080,
+            "height": 1920,
+            "batch_size": 1,
+            "n_iter": 1,
+        }
+        if checkpoint_name:
+            # O Forge aceita trocar checkpoint por override quando o modelo já está instalado/baixado.
+            payload["override_settings"] = {"sd_model_checkpoint": checkpoint_name}
+            payload["override_settings_restore_afterwards"] = False
+        response = requests.post(f"{self._forge_api_base()}/sdapi/v1/txt2img", json=payload, timeout=300)
+        if response.status_code >= 400:
+            raise RuntimeError(f"Erro do Forge WebUI ({response.status_code}): {response.text.strip()}")
+        images = response.json().get("images", [])
+        if not images:
+            raise RuntimeError("O Forge WebUI não retornou imagem.")
+        image_data = str(images[0]).split(",")[-1]
+        return base64.b64decode(image_data)
+
+    def _forge_api_base(self) -> str:
+        return self.forge_api_url.get().strip().rstrip("/")
+
+    def _save_ai_image(self, image_bytes: bytes, index: int) -> str:
+        AI_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+        filename = f"frase_{index + 1:03d}_ia_{int(time.time() * 1000)}.png"
+        output_path = AI_IMAGE_DIR / filename
+        output_path.write_bytes(image_bytes)
+        return str(output_path)
 
     def _edit_line_link(self, index: int) -> None:
         line = self.lines[index]
