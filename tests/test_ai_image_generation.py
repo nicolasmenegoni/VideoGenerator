@@ -122,3 +122,11 @@ def test_local_ai_txt2img_wraps_generation_errors(monkeypatch) -> None:
 
     assert "A IA local não conseguiu renderizar a imagem" in message
     assert "Detalhe técnico" in message
+
+
+def test_chatgpt_repeat_prompt_has_no_trailing_text_after_quote() -> None:
+    prompt = VideoGeneratorApp._chatgpt_repeat_prompt('Era o ano de 1922.')
+
+    assert prompt.endswith('"Era o ano de 1922."')
+    assert not prompt.endswith('"Era o ano de 1922.".')
+    assert "sem adicionar nada antes ou depois" in prompt

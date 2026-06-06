@@ -606,7 +606,7 @@ class VideoGeneratorApp:
 
         instructions = (
             "Fluxo usado: abrir o ChatGPT pelo atalho, capturar a janela, localizar automaticamente o campo de texto "
-            "e o botão Enviar pela imagem, enviar 'Apenas repita isso com aspas: [frase]', esperar a resposta pelo tempo configurado, "
+            "e o botão Enviar pela imagem, pedir para responder somente com a frase entre aspas, esperar a resposta pelo tempo configurado, "
             "aguardar todo esse tempo e só então procurar os 3 pontinhos novos da última resposta (horizontal ou vertical), "
             "priorizar o candidato perto do fim da conversa, revelar botões ocultos quando necessário, "
             "confirmar que o menu abriu perto do clique e então clicar em 'Ler em voz alta'."
@@ -1491,8 +1491,7 @@ class VideoGeneratorApp:
             self.message_queue.put(("error", str(exc)))
 
     def _generate_tts(self, text: str, output_path: Path) -> None:
-        quoted_text = text.replace('"', "'")
-        prompt = f'Apenas repita isso com aspas: "{quoted_text}"'
+        prompt = self._chatgpt_repeat_prompt(text)
         shortcut_keys = [part.strip().lower() for part in self.chatgpt_shortcut.get().split("+") if part.strip()]
         if not shortcut_keys:
             shortcut_keys = ["alt", "c"]
@@ -1548,7 +1547,7 @@ class VideoGeneratorApp:
             if not any(abs(screen_candidate.x - point.x) <= 8 and abs(screen_candidate.y - point.y) <= 8 for point in attempts):
                 attempts.append(screen_candidate)
 
-        for attempt in attempts[:5]:
+        for attempt in attempts[:8]:
             pyautogui.press("esc")
             time.sleep(0.08)
             pyautogui.click(attempt.x, attempt.y)
@@ -1571,6 +1570,11 @@ class VideoGeneratorApp:
             time.sleep(0.05)
 
         return self._record_system_audio(output_path, record_duration, on_ready=start_read_aloud)
+
+    @staticmethod
+    def _chatgpt_repeat_prompt(text: str) -> str:
+        quoted_text = " ".join(text.replace('"', "'").split())
+        return f'Responda somente com esta frase entre aspas, sem adicionar nada antes ou depois: "{quoted_text}"'
 
     def _capture_chatgpt_window(self) -> WindowCapture:
         window = None
@@ -1788,7 +1792,7 @@ class VideoGeneratorApp:
         tiny = [
             component
             for dot_mask in dot_masks
-            for component in self._components(dot_mask, min_area=2)
+            for component in self._components(dot_mask, min_area=1)
             if 1 <= component.width <= 14
             and 1 <= component.height <= 14
             and component.width * component.height <= 130
@@ -1800,10 +1804,15 @@ class VideoGeneratorApp:
             if not any(abs(candidate.x - existing.x) <= 5 and abs(candidate.y - existing.y) <= 5 for existing in candidates):
                 candidates.append(candidate)
 
+        icon_components: list[ScreenBounds] = []
         for dot_mask in dot_masks:
-            for component in self._components(dot_mask, min_area=5):
+            for component in self._components(dot_mask, min_area=1):
                 if self._looks_like_more_icon_component(component):
+                    icon_components.append(component)
                     add_candidate(component.center)
+
+        for candidate in self._action_row_more_candidates(icon_components):
+            add_candidate(candidate)
 
         for first in centers:
             horizontal_neighbors = [point for point in centers if abs(point.y - first.y) <= 6 and 3 <= point.x - first.x <= 34]
@@ -1837,6 +1846,34 @@ class VideoGeneratorApp:
         compact_icon = 6 <= component.width <= 32 and 6 <= component.height <= 32
         return horizontal_icon or vertical_icon or compact_icon
 
+    @staticmethod
+    def _action_row_more_candidates(components: list[ScreenBounds]) -> list[ScreenPoint]:
+        # Na UI atual do ChatGPT a resposta mostra uma fileira de ações
+        # (copiar, compartilhar, regenerar e reticências). Quando as reticências
+        # são desenhadas como SVG/anti-aliasing, detectar os três pontos isolados
+        # pode falhar; nesse caso o botão de menu é o último ícone dessa fileira.
+        row_icons = [
+            component
+            for component in components
+            if 2 <= component.width <= 46 and 2 <= component.height <= 46
+        ]
+        candidates: list[ScreenPoint] = []
+        for component in row_icons:
+            same_row = [
+                other
+                for other in row_icons
+                if abs(other.center.y - component.center.y) <= 14
+                and 0 <= other.center.x - component.center.x <= 180
+            ]
+            if len(same_row) >= 3:
+                rightmost = max(same_row, key=lambda item: (item.center.x, item.center.y))
+                candidates.append(rightmost.center)
+        unique: list[ScreenPoint] = []
+        for candidate in candidates:
+            if not any(abs(candidate.x - existing.x) <= 5 and abs(candidate.y - existing.y) <= 5 for existing in unique):
+                unique.append(candidate)
+        return unique
+
     def _select_response_more_candidate(self, image: Any, candidates: list[ScreenPoint]) -> ScreenPoint:
         ranked = self._rank_response_more_candidates(image, candidates)
         return ranked[0]
@@ -1857,7 +1894,13 @@ class VideoGeneratorApp:
             y_score = -abs(preferred_bottom - point.y)
             lower_half_bonus = 120 if point.y >= int(height * 0.42) else 0
             edge_penalty = -80 if point.x < int(width * 0.18) or point.x > int(width * 0.94) else 0
-            return (lower_half_bonus + edge_penalty + y_score, point.y, point.x)
+            row = [candidate for candidate in candidates if abs(candidate.y - point.y) <= 8 and candidate.x <= int(width * 0.55)]
+            action_row_bonus = 0
+            if point.x <= int(width * 0.55) and 3 <= len(row) <= 8 and point.x >= max(candidate.x for candidate in row) - 8:
+                # Na fileira de ações, o menu de 3 pontinhos é o último ícone à direita.
+                # Limitar o tamanho da fileira evita confundir linhas de texto com botões.
+                action_row_bonus = 180
+            return (action_row_bonus + lower_half_bonus + edge_penalty + y_score, point.y, point.x)
 
         return sorted(candidates, key=score, reverse=True)
 
