@@ -1493,9 +1493,9 @@ class VideoGeneratorApp:
         self._queue_status("Gerando áudio com Kokoro...", step=True)
         
         # Gera o áudio usando Kokoro
-        # Para português brasileiro (lang_code='p'), não especificamos voice
-        # A biblioteca usará a voz padrão automaticamente
-        result = list(self.kokoro_model(text=text))
+        # Para português brasileiro (lang_code='p'), usamos a voz 'pb' (português brasileiro)
+        # A voz deve ser especificada explicitamente conforme exigido pela API atual
+        result = list(self.kokoro_model(text=text, voice='pb'))
         
         if not result or len(result) == 0 or result[0][2] is None:
             raise RuntimeError("Falha ao gerar áudio com Kokoro")
