@@ -1486,15 +1486,16 @@ class VideoGeneratorApp:
         if self.kokoro_model is None:
             self._queue_status("Carregando modelo Kokoro...", step=True)
             # KPipeline é a classe correta para geração de áudio
-            # lang_code='a' para português (American Portuguese), model=True carrega o modelo automaticamente
-            self.kokoro_model = KPipeline(lang_code='a', model=True)
+            # lang_code='p' para português brasileiro
+            # repo_id explícito para evitar warning
+            self.kokoro_model = KPipeline(lang_code='p', model=True, repo_id='hexgrad/Kokoro-82M')
         
         self._queue_status("Gerando áudio com Kokoro...", step=True)
         
         # Gera o áudio usando Kokoro
-        # KPipeline retorna um gerador que produz (graphemes, phonemes, audio) tuples
-        # Para português, usamos voice='ap' (American Portuguese female voice)
-        result = list(self.kokoro_model(text=text, voice='ap'))
+        # Para português brasileiro (lang_code='p'), não especificamos voice
+        # A biblioteca usará a voz padrão automaticamente
+        result = list(self.kokoro_model(text=text))
         
         if not result or len(result) == 0 or result[0][2] is None:
             raise RuntimeError("Falha ao gerar áudio com Kokoro")

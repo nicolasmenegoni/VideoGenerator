@@ -1,1 +1,41 @@
-(empty)
+```gitignore
+# Compiled Python files
+*.pyc
+__pycache__/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.local
+*.env.*
+
+# Editor/IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
+
+# Build/dist directories
+build/
+dist/
+target/
+
+# Coverage reports
+.coverage
+coverage/
+htmlcov/
+
+# Dependency caches
+node_modules/
+.mypy_cache/
+.pytest_cache/
+.gradle/
+```
