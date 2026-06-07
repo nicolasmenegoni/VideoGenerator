@@ -30,6 +30,13 @@ import pyperclip
 import requests
 import soundcard as sc
 
+try:
+    from kokoro import KModel
+    KOKORO_AVAILABLE = True
+except ImportError:
+    KOKORO_AVAILABLE = False
+    KModel = None
+
 APP_TITLE = "VideoGenerator"
 CONFIG_FILE = Path.home() / ".videogenerator_config.json"
 VIDEO_SIZE = "1080:1920"
@@ -134,6 +141,7 @@ class VideoGeneratorApp:
         self.media_preview_failed: set[str] = set()
         self.local_image_pipeline: Any | None = None
         self.local_image_pipeline_key: tuple[str, str] | None = None
+        self.kokoro_model: Any | None = None
         self.script_text_value = DEFAULT_SCRIPT_TEXT
         self.lines: list[ScriptLine] = []
         self.used_media_urls: set[str] = set()
