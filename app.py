@@ -31,11 +31,11 @@ import requests
 import soundcard as sc
 
 try:
-    from kokoro import KModel
+    from kokoro import KPipeline
     KOKORO_AVAILABLE = True
 except ImportError:
     KOKORO_AVAILABLE = False
-    KModel = None
+    KPipeline = None
 
 APP_TITLE = "VideoGenerator"
 CONFIG_FILE = Path.home() / ".videogenerator_config.json"
@@ -1482,16 +1482,24 @@ class VideoGeneratorApp:
         if not KOKORO_AVAILABLE:
             raise RuntimeError("Kokoro não está instalado. Execute: pip install kokoro")
         
-        # Carrega o modelo Kokoro se ainda não estiver carregado
+        # Carrega o pipeline Kokoro se ainda não estiver carregado
         if self.kokoro_model is None:
             self._queue_status("Carregando modelo Kokoro...", step=True)
-            self.kokoro_model = KModel()
+            # KPipeline é a classe correta para geração de áudio
+            # lang_code='p' para português, model=True carrega o modelo automaticamente
+            self.kokoro_model = KPipeline(lang_code='p', model=True)
         
         self._queue_status("Gerando áudio com Kokoro...", step=True)
         
         # Gera o áudio usando Kokoro
-        # Kokoro gera áudio em formato WAV
-        audio_array = self.kokoro_model.generate(text, lang='pt')
+        # KPipeline retorna um gerador que produz (graphemes, phonemes, audio) tuples
+        result = list(self.kokoro_model(text=text, voice='af'))  # 'af' é uma voz feminina em inglês
+        
+        if not result or len(result) == 0 or result[0][2] is None:
+            raise RuntimeError("Falha ao gerar áudio com Kokoro")
+        
+        # Extrai o áudio do resultado (terceiro elemento do tuple)
+        audio_array = result[0][2]
         
         # Salva o áudio como WAV
         sample_rate = 24000  # Kokoro usa 24kHz
