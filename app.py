@@ -46,8 +46,9 @@ DEFAULT_SCRIPT_TEXT = "Hoje vamos falar sobre a China.\nEsse país é incrível.
 CLIPBOARD_MEDIA_DIR = Path.home() / ".videogenerator_media"
 AI_IMAGE_DIR = Path.home() / ".videogenerator_ai_images"
 DEFAULT_LOCAL_IMAGE_MODEL = "runwayml/stable-diffusion-v1-5"
-LOCAL_IMAGE_WIDTH = 576
-LOCAL_IMAGE_HEIGHT = 1024
+LOCAL_IMAGE_WIDTH = 512
+LOCAL_IMAGE_HEIGHT = 912
+LOCAL_IMAGE_STEPS = 20
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 LOCAL_MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
 
@@ -103,7 +104,7 @@ class VideoGeneratorApp:
         self.groq_key = StringVar()
         self.local_image_model = StringVar(value=DEFAULT_LOCAL_IMAGE_MODEL)
         self.local_image_device = StringVar(value="CUDA")
-        self.local_image_steps = StringVar(value="30")
+        self.local_image_steps = StringVar(value=str(LOCAL_IMAGE_STEPS))
         self.video_title = StringVar(value="video_gerado")
         self.output_dir = StringVar(value=str(Path.home() / "Videos"))
         self.video_extra_after_audio = StringVar(value="1")
@@ -1177,7 +1178,7 @@ class VideoGeneratorApp:
 
     def _local_ai_txt2img(self, prompt: str) -> bytes:
         pipeline = self._load_local_image_pipeline()
-        steps = self._safe_int(self.local_image_steps.get(), 30, 1, 80)
+        steps = self._safe_int(self.local_image_steps.get(), LOCAL_IMAGE_STEPS, 1, 80)
         negative_prompt = "text, letters, logo, watermark, blurry, low quality, distorted, deformed, bad anatomy"
         try:
             result = pipeline(
