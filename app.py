@@ -14,6 +14,7 @@ import threading
 import urllib.parse
 import warnings
 import wave
+import webbrowser
 from io import BytesIO
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -30,12 +31,8 @@ import pyperclip
 import requests
 import soundcard as sc
 
-try:
-    from kokoro import KModel
-    KOKORO_AVAILABLE = True
-except ImportError:
-    KOKORO_AVAILABLE = False
-    KModel = None
+KOKORO_AVAILABLE = False
+KModel = None
 
 APP_TITLE = "VideoGenerator"
 CONFIG_FILE = Path.home() / ".videogenerator_config.json"
@@ -142,7 +139,6 @@ class VideoGeneratorApp:
         self.media_preview_failed: set[str] = set()
         self.local_image_pipeline: Any | None = None
         self.local_image_pipeline_key: tuple[str, str] | None = None
-        self.kokoro_model: Any | None = None
         self.script_text_value = DEFAULT_SCRIPT_TEXT
         self.lines: list[ScriptLine] = []
         self.used_media_urls: set[str] = set()
@@ -599,7 +595,7 @@ class VideoGeneratorApp:
         top = Frame(parent, bg="#ffffff")
         top.pack(fill=X)
         ttk.Label(top, text="Audio", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Configure as opções de geração de áudio usando Kokoro (TTS local).", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
+        ttk.Label(top, text="Configure as opções de geração de áudio usando ChatGPT via navegador.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
 
         canvas = Canvas(parent, bd=0, highlightthickness=0, bg="#ffffff")
         canvas.pack(side=LEFT, fill=BOTH, expand=True)
@@ -614,21 +610,18 @@ class VideoGeneratorApp:
         canvas.bind("<MouseWheel>", lambda event: canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
 
         instructions = (
-            "O Kokoro é um modelo de TTS (text-to-speech) local que gera áudios em português do Brasil. "
-            "Não é necessário usar o ChatGPT. O áudio será gerado diretamente no seu computador."
+            "O áudio será gerado usando o ChatGPT no navegador. O app abrirá uma janela do ChatGPT, enviará a frase e usará o recurso 'Ler em voz alta'. "
+            "Certifique-se de que o volume do sistema esteja adequado para gravação."
         )
         Label(content, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
 
-        kokoro_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
-        kokoro_card.pack(fill=X, pady=(0, 12))
-        Label(kokoro_card, text="Configurações do Kokoro", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
+        chatgpt_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
+        chatgpt_card.pack(fill=X, pady=(0, 12))
+        Label(chatgpt_card, text="Configurações do ChatGPT", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
         
-        if KOKORO_AVAILABLE:
-            Label(kokoro_card, text="✓ Kokoro disponível. O modelo será carregado automaticamente na primeira geração.", bg="#f8f9fd", fg="#059669", font=("Segoe UI", 9)).pack(anchor="w")
-        else:
-            Label(kokoro_card, text="✗ Kokoro não instalado. Execute: pip install kokoro", bg="#f8f9fd", fg="#DC2626", font=("Segoe UI", 9)).pack(anchor="w")
+        Label(chatgpt_card, text="✓ O ChatGPT será aberto automaticamente durante a geração de áudio.", bg="#f8f9fd", fg="#059669", font=("Segoe UI", 9)).pack(anchor="w")
         
-        Label(kokoro_card, text="Dica: A primeira geração pode demorar alguns segundos enquanto o modelo é carregado.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
+        Label(chatgpt_card, text="Dica: Ajuste os tempos de espera se o ChatGPT estiver lento para responder.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
 
     def _build_music_tab(self, parent: Frame) -> None:
         top = Frame(parent, bg="#ffffff")
@@ -1478,30 +1471,59 @@ class VideoGeneratorApp:
             self.message_queue.put(("error", str(exc)))
 
     def _generate_tts(self, text: str, output_path: Path) -> None:
-        """Gera áudio usando Kokoro TTS localmente."""
-        if not KOKORO_AVAILABLE:
-            raise RuntimeError("Kokoro não está instalado. Execute: pip install kokoro")
+        """Gera áudio usando ChatGPT TTS via navegador."""
+        self._queue_status("Abrindo ChatGPT...", step=True)
         
-        # Carrega o modelo Kokoro se ainda não estiver carregado
-        if self.kokoro_model is None:
-            self._queue_status("Carregando modelo Kokoro...", step=True)
-            self.kokoro_model = KModel()
+        # Abre o ChatGPT
+        webbrowser.open("https://chatgpt.com/")
         
-        self._queue_status("Gerando áudio com Kokoro...", step=True)
+        # Aguarda o navegador abrir
+        time.sleep(3)
         
-        # Gera o áudio usando Kokoro
-        # Kokoro gera áudio em formato WAV
-        audio_array = self.kokoro_model.generate(text, lang='pt')
+        # Copia a frase para o clipboard
+        pyperclip.copy(f"Apenas repita isso: {text}")
         
-        # Salva o áudio como WAV
-        sample_rate = 24000  # Kokoro usa 24kHz
-        with wave.open(str(output_path), 'wb') as wav_file:
-            wav_file.setnchannels(1)  # Mono
-            wav_file.setsampwidth(2)  # 16-bit
-            wav_file.setframerate(sample_rate)
-            # Converte float32 para int16
-            audio_int16 = (audio_array * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
+        # Cola no campo de input do ChatGPT
+        # Usa atalho Ctrl+V para colar
+        pyautogui.hotkey('ctrl', 'v')
+        time.sleep(0.5)
+        
+        # Pressiona Enter para enviar
+        pyautogui.press('enter')
+        
+        # Aguarda a resposta do ChatGPT
+        response_wait = self._safe_float(self.chatgpt_response_wait.get(), 8.0, 1.0, 60.0)
+        self._queue_status(f"Aguardando resposta do ChatGPT ({response_wait}s)...", step=True)
+        time.sleep(response_wait)
+        
+        # Clica nos 3 pontinhos da resposta
+        capture = self._capture_chatgpt_window()
+        before_candidates = self._response_more_candidates(capture.image)
+        
+        # Revela o menu clicando nos 3 pontinhos
+        revealed = self._capture_chatgpt_with_revealed_actions(capture)
+        for reveal_capture in revealed:
+            reveal_candidates = self._response_more_candidates(reveal_capture.image)
+            if reveal_candidates:
+                capture = reveal_capture
+                break
+        
+        # Encontra o ponto do botão "Ler em voz alta"
+        read_point = self._find_read_aloud_point(capture.image, capture.image, 
+                                                  ScreenPoint(capture.offset_x + capture.image.width // 2, capture.offset_y + capture.image.height // 2),
+                                                  capture)
+        
+        # Converte para coordenadas da tela
+        screen_read_point = self._to_screen(capture, read_point)
+        
+        # Clica em "Ler em voz alta"
+        pyautogui.click(screen_read_point.x, screen_read_point.y)
+        time.sleep(0.5)
+        
+        # Grava o áudio do sistema
+        record_duration = self._safe_float(self.chatgpt_record_extra.get(), 2.0, 0.5, 30.0) + len(text) * 0.1
+        self._queue_status("Gravando áudio do sistema...", step=True)
+        self._record_system_audio(output_path, record_duration)
 
     def _play_read_aloud_and_record(
         self,
