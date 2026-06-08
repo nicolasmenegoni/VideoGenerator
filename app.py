@@ -1496,7 +1496,7 @@ class VideoGeneratorApp:
         # Captura a janela do ChatGPT
         capture = self._capture_chatgpt_window()
         
-        # Usa coordenadas relativas fixas para clicar nos 3 pontinhos e "Ler em voz alta"
+        # Encontra e clica nos 3 pontinhos e "Ler em voz alta"
         self._click_read_aloud_simple(capture)
         
         # Grava o áudio do sistema
@@ -1507,23 +1507,30 @@ class VideoGeneratorApp:
     def _click_read_aloud_simple(self, capture: WindowCapture) -> None:
         """Método simplificado para clicar nos 3 pontinhos e em Ler em voz alta.
         
-        Usa coordenadas relativas baseadas no tamanho da janela do ChatGPT.
+        Tenta primeiro encontrar os 3 pontinhos automaticamente usando processamento de imagem.
+        Se não encontrar, usa coordenadas relativas baseadas no tamanho da janela do ChatGPT.
         As coordenadas podem ser ajustadas na aba Audio.
         """
         array = self._image_array(capture.image)
         height, width, _ = array.shape
         
-        # Coordenadas relativas para os 3 pontinhos
-        dots_x_ratio = float(self.chatgpt_menu_x.get()) if self.chatgpt_menu_x.get() else 0.92
-        dots_y_ratio = float(self.chatgpt_menu_y.get()) if self.chatgpt_menu_y.get() else 0.75
-        
-        dots_x = int(width * dots_x_ratio)
-        dots_y = int(height * dots_y_ratio)
-        
-        self._queue_status(f"Clicando nos 3 pontinhos ({dots_x}, {dots_y})...", step=True)
+        # Tenta encontrar os 3 pontinhos automaticamente
+        dots_point: ScreenPoint | None = None
+        try:
+            dots_point = self._find_response_more_button(capture.image)
+            self._queue_status(f"3 pontinhos encontrados automaticamente em ({dots_point.x}, {dots_point.y})...", step=True)
+        except RuntimeError:
+            # Fallback para coordenadas relativas fixas
+            dots_x_ratio = float(self.chatgpt_menu_x.get()) if self.chatgpt_menu_x.get() else 0.92
+            dots_y_ratio = float(self.chatgpt_menu_y.get()) if self.chatgpt_menu_y.get() else 0.75
+            
+            dots_x = int(width * dots_x_ratio)
+            dots_y = int(height * dots_y_ratio)
+            dots_point = ScreenPoint(dots_x, dots_y)
+            self._queue_status(f"Usando coordenadas fixas para 3 pontinhos ({dots_x}, {dots_y})...", step=True)
         
         # Clica nos 3 pontinhos
-        pyautogui.click(capture.offset_x + dots_x, capture.offset_y + dots_y)
+        pyautogui.click(capture.offset_x + dots_point.x, capture.offset_y + dots_point.y)
         time.sleep(0.5)
         
         # Aguarda o menu aparecer
