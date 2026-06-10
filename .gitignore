@@ -1,50 +1,41 @@
 ```
+# Version control metadata
+=*
+
 # Dependencies
+venv/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-*.py~
 
-# Virtual environments
-.venv/
-venv/
-env/
-ENV/
-
-# Distribution / packaging
-dist/
-build/
-*.egg-info/
-.eggs/
-
-# Environment files
+# Environment
 .env
 .env.local
-.env.*
-!.env.example
+*.env.*
 
 # Logs
 *.log
 
-# OS generated files
-.DS_Store
-Thumbs.db
+# Temporary files
+*.tmp
+*.swp
+*.swo
 
-# Coverage reports
+# Coverage
 .coverage
+coverage/
 htmlcov/
-.coverage.*
 
-# Pytest cache
-.pytest_cache/
-
-# MyPy cache
-.mypy_cache/
-
-# VSCode
+# Editors
 .vscode/
-
-# IntelliJ IDEA
 .idea/
+*.swp
+*.swo
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
 ```

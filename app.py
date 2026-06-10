@@ -101,7 +101,7 @@ class VideoGeneratorApp:
         self.pexels_key = StringVar()
         self.groq_key = StringVar()
         self.local_image_model = StringVar(value=DEFAULT_LOCAL_IMAGE_MODEL)
-        self.local_image_device = StringVar(value="CUDA")
+        self.local_image_device = StringVar(value="Auto")
         self.local_image_steps = StringVar(value=str(LOCAL_IMAGE_STEPS))
         self.video_title = StringVar(value="video_gerado")
         self.output_dir = StringVar(value=str(Path.home() / "Videos"))
