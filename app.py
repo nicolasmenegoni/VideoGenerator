@@ -1496,7 +1496,7 @@ class VideoGeneratorApp:
         # Captura a janela do ChatGPT
         capture = self._capture_chatgpt_window()
         
-        # Usa coordenadas relativas fixas para clicar nos 3 pontinhos e "Ler em voz alta"
+        # Encontra e clica nos 3 pontinhos e "Ler em voz alta"
         self._click_read_aloud_simple(capture)
         
         # Grava o áudio do sistema
@@ -1507,41 +1507,76 @@ class VideoGeneratorApp:
     def _click_read_aloud_simple(self, capture: WindowCapture) -> None:
         """Método simplificado para clicar nos 3 pontinhos e em Ler em voz alta.
         
-        Usa coordenadas relativas baseadas no tamanho da janela do ChatGPT.
+        Tenta primeiro encontrar os 3 pontinhos automaticamente usando processamento de imagem.
+        Se não encontrar, usa coordenadas relativas baseadas no tamanho da janela do ChatGPT.
         As coordenadas podem ser ajustadas na aba Audio.
         """
         array = self._image_array(capture.image)
         height, width, _ = array.shape
         
-        # Coordenadas relativas para os 3 pontinhos
-        dots_x_ratio = float(self.chatgpt_menu_x.get()) if self.chatgpt_menu_x.get() else 0.92
-        dots_y_ratio = float(self.chatgpt_menu_y.get()) if self.chatgpt_menu_y.get() else 0.75
-        
-        dots_x = int(width * dots_x_ratio)
-        dots_y = int(height * dots_y_ratio)
-        
-        self._queue_status(f"Clicando nos 3 pontinhos ({dots_x}, {dots_y})...", step=True)
+        # Tenta encontrar os 3 pontinhos automaticamente
+        dots_point: ScreenPoint | None = None
+        try:
+            dots_point = self._find_response_more_button(capture.image)
+            self._queue_status(f"3 pontinhos encontrados automaticamente em ({dots_point.x}, {dots_point.y})...", step=True)
+        except RuntimeError:
+            # Fallback para coordenadas relativas fixas
+            dots_x_ratio = float(self.chatgpt_menu_x.get()) if self.chatgpt_menu_x.get() else 0.92
+            dots_y_ratio = float(self.chatgpt_menu_y.get()) if self.chatgpt_menu_y.get() else 0.75
+            
+            dots_x = int(width * dots_x_ratio)
+            dots_y = int(height * dots_y_ratio)
+            dots_point = ScreenPoint(dots_x, dots_y)
+            self._queue_status(f"Usando coordenadas fixas para 3 pontinhos ({dots_x}, {dots_y})...", step=True)
         
         # Clica nos 3 pontinhos
-        pyautogui.click(capture.offset_x + dots_x, capture.offset_y + dots_y)
+        pyautogui.click(capture.offset_x + dots_point.x, capture.offset_y + dots_point.y)
         time.sleep(0.5)
         
         # Aguarda o menu aparecer
         menu_wait = self._safe_float(self.chatgpt_menu_wait.get(), 1.0, 0.2, 10.0)
         time.sleep(menu_wait)
         
-        # Coordenadas relativas para "Ler em voz alta" no menu
-        read_x_ratio = float(self.chatgpt_read_x.get()) if self.chatgpt_read_x.get() else 0.88
-        read_y_ratio = float(self.chatgpt_read_y.get()) if self.chatgpt_read_y.get() else 0.82
+        # Captura novamente após abrir o menu para obter as dimensões corretas do menu
+        menu_capture = self._capture_chatgpt_window()
+        menu_array = self._image_array(menu_capture.image)
+        menu_height, menu_width, _ = menu_array.shape
         
-        read_x = int(width * read_x_ratio)
-        read_y = int(height * read_y_ratio)
+        # Tenta encontrar "Ler em voz alta" automaticamente no menu aberto
+        read_point: ScreenPoint | None = None
+        try:
+            # Usa o método existente que já sabe encontrar o item do menu
+            read_local_point = self._find_read_aloud_point(capture.image, menu_capture.image, dots_point, menu_capture)
+            read_point = self._to_screen(menu_capture, read_local_point)
+            self._queue_status(f"'Ler em voz alta' encontrado automaticamente em ({read_point.x}, {read_point.y})...", step=True)
+        except (RuntimeError, Exception):
+            # Fallback para coordenadas relativas fixas
+            read_x_ratio = float(self.chatgpt_read_x.get()) if self.chatgpt_read_x.get() else 0.88
+            read_y_ratio = float(self.chatgpt_read_y.get()) if self.chatgpt_read_y.get() else 0.82
+            
+            read_x = int(menu_width * read_x_ratio)
+            read_y = int(menu_height * read_y_ratio)
+            read_point = ScreenPoint(read_x, read_y)
+            self._queue_status(f"Usando coordenadas fixas para 'Ler em voz alta' ({read_x}, {read_y})...", step=True)
         
-        self._queue_status(f"Clicando em Ler em voz alta ({read_x}, {read_y})...", step=True)
+        # Valida se as coordenadas estão dentro dos limites seguros
+        screen_width, screen_height = pyautogui.size()
+        safe_margin = 50  # Margem de segurança dos cantos
         
-        # Clica em "Ler em voz alta"
-        pyautogui.click(capture.offset_x + read_x, capture.offset_y + read_y)
-        time.sleep(0.5)
+        final_x = min(max(menu_capture.offset_x + read_point.x, safe_margin), screen_width - safe_margin)
+        final_y = min(max(menu_capture.offset_y + read_point.y, safe_margin), screen_height - safe_margin)
+        
+        self._queue_status(f"Clicando em 'Ler em voz alta' ({final_x}, {final_y})...", step=True)
+        
+        # Desabilita temporariamente o failsafe para cliques controlados
+        old_failsafe = pyautogui.FAILSAFE
+        pyautogui.FAILSAFE = False
+        try:
+            # Clica em "Ler em voz alta"
+            pyautogui.click(final_x, final_y)
+            time.sleep(0.5)
+        finally:
+            pyautogui.FAILSAFE = old_failsafe
 
     def _play_read_aloud_and_record(
         self,
