@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import importlib.util
 import json
+import os
 import queue
 import time
 import re
@@ -821,7 +822,11 @@ class VideoGeneratorApp:
         # O preview usa a mesma área para links do Pexels e imagens coladas da área de transferência.
         image = self._load_media_preview(clean_url)
         if image:
-            Label(preview, image=image, bg="#eef1f8").pack(fill=BOTH, expand=True)
+            label = Label(preview, image=image, bg="#eef1f8")
+            label.pack(fill=BOTH, expand=True)
+            label.bind("<Button-1>", lambda e: self._open_media_file(clean_url))
+            preview.configure(cursor="hand2")
+            preview.bind("<Button-1>", lambda e: self._open_media_file(clean_url))
         elif clean_url in self.media_preview_failed:
             Label(preview, text="Sem\npreview", bg="#eef1f8", fg="#8b95a7", justify="center", font=("Segoe UI", 8, "bold")).pack(fill=BOTH, expand=True)
         else:
@@ -949,6 +954,28 @@ class VideoGeneratorApp:
         if path.exists() and path.suffix.lower() in LOCAL_MEDIA_EXTENSIONS:
             return path
         return None
+
+    def _open_media_file(self, media_url: str) -> None:
+        """Abre o arquivo de mídia (imagem ou vídeo) no visualizador padrão do sistema."""
+        local_path = self._local_media_path(media_url)
+        if local_path:
+            try:
+                os.startfile(local_path)  # Windows
+            except AttributeError:
+                # macOS e Linux
+                if sys.platform == "darwin":
+                    subprocess.run(["open", str(local_path)], check=False)
+                else:
+                    # Linux - tenta xdg-open primeiro, depois fallback para open
+                    subprocess.run(["xdg-open", str(local_path)], check=False)
+            except Exception:
+                messagebox.showerror(APP_TITLE, f"Não foi possível abrir o arquivo: {local_path}")
+        else:
+            # URL da web - abre no navegador
+            try:
+                webbrowser.open(media_url)
+            except Exception:
+                messagebox.showerror(APP_TITLE, f"Não foi possível abrir a URL: {media_url}")
 
     @staticmethod
     def _image_to_png_bytes(image: Image.Image) -> bytes:
