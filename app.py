@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-import importlib.util
 import json
 import queue
 import time
@@ -39,13 +38,10 @@ CONFIG_FILE = Path.home() / ".videogenerator_config.json"
 VIDEO_SIZE = "1080:1920"
 FPS = "30"
 GROQ_MODEL = "llama-3.3-70b-versatile"
+QWEN_URL = "https://chat.qwen.ai/"
 DEFAULT_SCRIPT_TEXT = "Hoje vamos falar sobre a China.\nEsse país é incrível.\nVamos te provar."
 CLIPBOARD_MEDIA_DIR = Path.home() / ".videogenerator_media"
-AI_IMAGE_DIR = Path.home() / ".videogenerator_ai_images"
-DEFAULT_LOCAL_IMAGE_MODEL = "runwayml/stable-diffusion-v1-5"
-LOCAL_IMAGE_WIDTH = 512
-LOCAL_IMAGE_HEIGHT = 912
-LOCAL_IMAGE_STEPS = 20
+LOGO_MEDIA_DIR = Path.home() / ".videogenerator_logos"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 LOCAL_MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
 
@@ -99,9 +95,9 @@ class VideoGeneratorApp:
 
         self.pexels_key = StringVar()
         self.groq_key = StringVar()
-        self.local_image_model = StringVar(value=DEFAULT_LOCAL_IMAGE_MODEL)
-        self.local_image_device = StringVar(value="CUDA")
-        self.local_image_steps = StringVar(value=str(LOCAL_IMAGE_STEPS))
+        self.logo_path = StringVar(value="")
+        self.logo_position = StringVar(value="Canto superior direito")
+        self.logo_size = StringVar(value="20")
         self.video_title = StringVar(value="video_gerado")
         self.output_dir = StringVar(value=str(Path.home() / "Videos"))
         self.video_extra_after_audio = StringVar(value="1")
@@ -137,8 +133,7 @@ class VideoGeneratorApp:
         self.media_preview_bytes: dict[str, bytes] = {}
         self.media_preview_loading: set[str] = set()
         self.media_preview_failed: set[str] = set()
-        self.local_image_pipeline: Any | None = None
-        self.local_image_pipeline_key: tuple[str, str] | None = None
+        self.logo_preview_image: ImageTk.PhotoImage | None = None
         self.script_text_value = DEFAULT_SCRIPT_TEXT
         self.lines: list[ScriptLine] = []
         self.used_media_urls: set[str] = set()
@@ -171,7 +166,7 @@ class VideoGeneratorApp:
         header = Frame(shell, bg="#f6f7fb")
         header.pack(fill=X, pady=(0, 12))
         Label(header, text="VideoGenerator", bg="#f6f7fb", fg="#111827", font=("Segoe UI", 24, "bold")).pack(anchor="w")
-        Label(header, text="Gere vídeos verticais com ChatGPT, Pexels e legendas em poucos cliques.", bg="#f6f7fb", fg="#657084", font=("Segoe UI", 10)).pack(anchor="w")
+        Label(header, text="Gere vídeos verticais com Qwen, Pexels e legendas em poucos cliques.", bg="#f6f7fb", fg="#657084", font=("Segoe UI", 10)).pack(anchor="w")
 
         nav = Frame(shell, bg="#eef1f8", padx=6, pady=6)
         nav.pack(fill=X, pady=(0, 12))
@@ -179,6 +174,7 @@ class VideoGeneratorApp:
         self._add_nav_button(nav, "roteiro", "Roteiro")
         self._add_nav_button(nav, "video", "Video")
         self._add_nav_button(nav, "legendas", "Legendas")
+        self._add_nav_button(nav, "logo", "Logo")
         self._add_nav_button(nav, "audio", "Audio")
         self._add_nav_button(nav, "musica", "Musica")
 
@@ -189,6 +185,7 @@ class VideoGeneratorApp:
         self.tabs["roteiro"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
         self.tabs["video"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
         self.tabs["legendas"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
+        self.tabs["logo"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
         self.tabs["audio"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
         self.tabs["musica"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
 
@@ -196,6 +193,7 @@ class VideoGeneratorApp:
         self._build_script_tab(self.tabs["roteiro"])
         self._build_video_tab(self.tabs["video"])
         self._build_subtitles_tab(self.tabs["legendas"])
+        self._build_logo_tab(self.tabs["logo"])
         self._build_audio_tab(self.tabs["audio"])
         self._build_music_tab(self.tabs["musica"])
         self._refresh_lines()
@@ -245,10 +243,6 @@ class VideoGeneratorApp:
 
         self._labeled_entry(parent, "Pexels API", self.pexels_key, show="*")
         self._labeled_entry(parent, "Groq API", self.groq_key, show="*")
-        self._labeled_entry(parent, "Modelo local de imagem (Hugging Face ou pasta)", self.local_image_model)
-        self._option_row(parent, "Dispositivo da IA local", self.local_image_device, ["CUDA", "Auto", "MPS", "CPU"])
-        self._labeled_entry(parent, "Passos da imagem local", self.local_image_steps)
-
         Button(parent, text="Salvar chaves", command=self._save_config, bg="#111827", fg="#ffffff", activebackground="#2a3446", activeforeground="#ffffff", relief="flat", padx=18, pady=10, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(16, 0))
 
     def _build_script_tab(self, parent: Frame) -> None:
@@ -465,6 +459,88 @@ class VideoGeneratorApp:
             variable.trace_add("write", lambda *_args: self._update_subtitle_preview())
         self._update_subtitle_preview()
 
+    def _build_logo_tab(self, parent: Frame) -> None:
+        top = Frame(parent, bg="#ffffff")
+        top.pack(fill=X)
+        ttk.Label(top, text="Logo", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(top, text="Cole uma imagem PNG para aparecer por cima do vídeo e escolha o canto e o tamanho.", style="Muted.TLabel").pack(anchor="w", pady=(4, 22))
+
+        controls = Frame(parent, bg="#ffffff")
+        controls.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 18))
+        preview_box = Frame(parent, bg="#ffffff")
+        preview_box.pack(side=RIGHT, fill=Y)
+
+        Label(controls, text="Arquivo PNG da logo", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        logo_row = Frame(controls, bg="#ffffff")
+        logo_row.pack(fill=X, pady=(6, 14))
+        Entry(logo_row, textvariable=self.logo_path, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 10)).pack(side=LEFT, fill=X, expand=True, ipady=9)
+        Button(logo_row, text="Colar PNG", command=self._paste_logo, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=RIGHT, padx=(10, 0))
+        Button(logo_row, text="Selecionar", command=self._choose_logo_file, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=RIGHT, padx=(10, 0))
+
+        self._option_row(
+            controls,
+            "Canto do video",
+            self.logo_position,
+            ["Canto superior direito", "Canto superior esquerdo", "Canto inferior direito", "Canto inferior esquerdo"],
+        )
+        self._entry_row(controls, "Tamanho da logo (% da largura do vídeo)", self.logo_size, "Ex.: 20. Use 0 para não exibir a logo.")
+        Button(controls, text="Remover logo", command=self._clear_logo, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(anchor="w")
+
+        ttk.Label(preview_box, text="Preview", style="Title.TLabel").pack(anchor="w")
+        self.logo_preview = Canvas(preview_box, width=300, height=500, bg="#111827", bd=0, highlightthickness=0)
+        self.logo_preview.pack(pady=(12, 0))
+        for variable in [self.logo_path, self.logo_position, self.logo_size]:
+            variable.trace_add("write", lambda *_args: self._update_logo_preview())
+        self._update_logo_preview()
+
+    def _choose_logo_file(self) -> None:
+        file_path = filedialog.askopenfilename(title="Selecionar logo PNG", filetypes=[("PNG", "*.png")])
+        if file_path:
+            self.logo_path.set(file_path)
+            self._save_config()
+
+    def _paste_logo(self) -> None:
+        image_bytes = self._clipboard_image_bytes()
+        if not image_bytes:
+            messagebox.showerror(APP_TITLE, "Copie uma imagem PNG para a área de transferência e clique em Colar PNG.")
+            return
+        LOGO_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+        output_path = LOGO_MEDIA_DIR / f"logo_{int(time.time() * 1000)}.png"
+        output_path.write_bytes(image_bytes)
+        self.logo_path.set(str(output_path))
+        self._save_config()
+        self.status_text.set("Logo colada e salva.")
+
+    def _clear_logo(self) -> None:
+        self.logo_path.set("")
+        self._save_config()
+        self.status_text.set("Logo removida.")
+
+    def _update_logo_preview(self) -> None:
+        if not hasattr(self, "logo_preview"):
+            return
+        canvas = self.logo_preview
+        canvas.delete("all")
+        width, height = 300, 500
+        canvas.create_rectangle(0, 0, width, height, fill="#111827", outline="")
+        canvas.create_rectangle(20, 28, 280, 472, outline="#657084", width=2)
+        canvas.create_text(150, 250, text="Video", fill="#e5e7eb", font=("Segoe UI", 24, "bold"))
+        logo_path = self._logo_file_path()
+        if not logo_path:
+            canvas.create_text(150, 315, text="Sem logo", fill="#8b95a7", font=("Segoe UI", 12, "bold"))
+            return
+        try:
+            image = Image.open(logo_path).convert("RGBA")
+            target_width = max(1, int(width * self._logo_size_fraction()))
+            image.thumbnail((target_width, height), Image.LANCZOS)
+            self.logo_preview_image = ImageTk.PhotoImage(image)
+        except Exception:
+            canvas.create_text(150, 315, text="PNG inválido", fill="#fca5a5", font=("Segoe UI", 12, "bold"))
+            return
+        margin = 22
+        x, y = self._logo_preview_coordinates(width, height, self.logo_preview_image.width(), self.logo_preview_image.height(), margin)
+        canvas.create_image(x, y, image=self.logo_preview_image, anchor="nw")
+
     def _entry_row(self, parent: Frame, label: str, variable: StringVar, hint: str) -> None:
         Label(parent, text=label, bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         Entry(parent, textvariable=variable, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11)).pack(fill=X, ipady=9, pady=(6, 4))
@@ -595,7 +671,7 @@ class VideoGeneratorApp:
         top = Frame(parent, bg="#ffffff")
         top.pack(fill=X)
         ttk.Label(top, text="Audio", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Configure as opções de geração de áudio usando ChatGPT via navegador.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
+        ttk.Label(top, text="Configure as opções de geração de áudio usando Qwen via navegador.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
 
         canvas = Canvas(parent, bd=0, highlightthickness=0, bg="#ffffff")
         canvas.pack(side=LEFT, fill=BOTH, expand=True)
@@ -610,18 +686,18 @@ class VideoGeneratorApp:
         canvas.bind("<MouseWheel>", lambda event: canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
 
         instructions = (
-            "O áudio será gerado usando o ChatGPT no navegador. O app abrirá uma janela do ChatGPT, enviará a frase e usará o recurso 'Ler em voz alta'. "
+            "O áudio será gerado usando o Qwen no navegador. O app abrirá uma janela do Qwen, enviará a frase, aguardará “Pensamento concluído” e usará o recurso “Leia em voz alta”. "
             "Certifique-se de que o volume do sistema esteja adequado para gravação."
         )
         Label(content, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
 
         chatgpt_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
         chatgpt_card.pack(fill=X, pady=(0, 12))
-        Label(chatgpt_card, text="Configurações do ChatGPT", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
+        Label(chatgpt_card, text="Configurações do Qwen", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
         
-        Label(chatgpt_card, text="✓ O ChatGPT será aberto automaticamente durante a geração de áudio.", bg="#f8f9fd", fg="#059669", font=("Segoe UI", 9)).pack(anchor="w")
+        Label(chatgpt_card, text="✓ O Qwen será aberto automaticamente durante a geração de áudio.", bg="#f8f9fd", fg="#059669", font=("Segoe UI", 9)).pack(anchor="w")
         
-        Label(chatgpt_card, text="Dica: Ajuste os tempos de espera se o ChatGPT estiver lento para responder.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
+        Label(chatgpt_card, text="Dica: Ajuste os tempos de espera se o Qwen estiver lento para responder.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
 
     def _build_music_tab(self, parent: Frame) -> None:
         top = Frame(parent, bg="#ffffff")
@@ -662,9 +738,6 @@ class VideoGeneratorApp:
                 data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
                 self.pexels_key.set(data.get("pexels_key", ""))
                 self.groq_key.set(data.get("groq_key", ""))
-                self.local_image_model.set(data.get("local_image_model", self.local_image_model.get()))
-                self.local_image_device.set(data.get("local_image_device", self.local_image_device.get()) or self.local_image_device.get())
-                self.local_image_steps.set(data.get("local_image_steps", self.local_image_steps.get()))
                 self.video_title.set(data.get("video_title", self.video_title.get()))
                 self.script_text_value = data.get("script_text", self.script_text_value)
                 self.lines = self._config_lines(data.get("script_lines", []))
@@ -696,6 +769,9 @@ class VideoGeneratorApp:
                 self.chatgpt_record_extra.set(data.get("chatgpt_record_extra", self.chatgpt_record_extra.get()))
                 self.music_path.set(data.get("music_path", self.music_path.get()))
                 self.music_volume.set(data.get("music_volume", self.music_volume.get()))
+                self.logo_path.set(data.get("logo_path", self.logo_path.get()))
+                self.logo_position.set(data.get("logo_position", self.logo_position.get()) or self.logo_position.get())
+                self.logo_size.set(data.get("logo_size", self.logo_size.get()))
             except json.JSONDecodeError:
                 pass
 
@@ -704,9 +780,6 @@ class VideoGeneratorApp:
         data = {
             "pexels_key": self.pexels_key.get().strip(),
             "groq_key": self.groq_key.get().strip(),
-            "local_image_model": self.local_image_model.get().strip(),
-            "local_image_device": self.local_image_device.get().strip(),
-            "local_image_steps": self.local_image_steps.get().strip(),
             "video_title": self.video_title.get().strip(),
             "script_text": self.script_text_value,
             "script_lines": self._config_script_lines(),
@@ -737,6 +810,9 @@ class VideoGeneratorApp:
             "chatgpt_record_extra": self.chatgpt_record_extra.get().strip(),
             "music_path": self.music_path.get().strip(),
             "music_volume": self.music_volume.get().strip(),
+            "logo_path": self.logo_path.get().strip(),
+            "logo_position": self.logo_position.get().strip(),
+            "logo_size": self.logo_size.get().strip(),
         }
         CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
         if show_status:
@@ -806,7 +882,6 @@ class VideoGeneratorApp:
             buttons = Frame(row, bg="#ffffff")
             buttons.pack(side=RIGHT, padx=(12, 0))
             Button(buttons, text="Colar link", command=lambda idx=index: self._paste_line_link(idx), bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT)
-            Button(buttons, text="Gerar imagem", command=lambda idx=index: self._start_ai_image_generation(idx), bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(8, 0))
             Button(buttons, text="Gerar outro video", command=lambda idx=index: self._start_single_video_update(idx), bg="#eef1ff", fg="#27319f", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(8, 0))
             Button(buttons, text="Editar", command=lambda idx=index: self._edit_line_link(idx), bg="#eef1ff", fg="#27319f", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(8, 0))
 
@@ -1010,198 +1085,6 @@ class VideoGeneratorApp:
         self._render_lines()
         self._save_config(show_status=False)
         self.status_text.set(f"Link colado na frase {index + 1}.")
-
-    def _start_ai_image_generation(self, index: int) -> None:
-        self._refresh_lines()
-        if index < 0 or index >= len(self.lines):
-            messagebox.showerror(APP_TITLE, "Não encontrei essa frase no roteiro sincronizado.")
-            return
-        if not self.groq_key.get().strip():
-            messagebox.showerror(APP_TITLE, "Informe a chave de API do Groq na aba APIs.")
-            self._show_tab("apis")
-            return
-        if not self.local_image_model.get().strip():
-            messagebox.showerror(APP_TITLE, "Informe o modelo local de imagem na aba APIs.")
-            self._show_tab("apis")
-            return
-        self._save_config(show_status=False)
-        self.progress.configure(value=0, maximum=3)
-        self.progress_text.set("Gerando imagem...")
-        self.status_text.set(f"Gerando imagem com IA para a frase {index + 1}...")
-        threading.Thread(target=self._ai_image_generation_worker, args=(index,), daemon=True).start()
-
-    def _ai_image_generation_worker(self, index: int) -> None:
-        try:
-            line = self.lines[index]
-            self._queue_status("Criando prompt visual com Groq...", step=True)
-            prompt = self._groq_image_prompt(index)
-            self._queue_status("Carregando modelo local de IA...", step=True)
-            self._load_local_image_pipeline()
-            device_label = self.local_image_pipeline_key[1].upper() if self.local_image_pipeline_key else self.local_image_device.get().strip()
-            self._queue_status(f"Renderizando imagem localmente com {device_label}...", step=True)
-            image_bytes = self._local_ai_txt2img(prompt)
-            media_path = self._save_ai_image(image_bytes, index)
-            self.used_media_urls.update({line.media_url, media_path})
-            self.lines[index].media_url = media_path
-            self.media_preview_bytes[media_path] = image_bytes
-            self.media_preview_images.pop(media_path, None)
-            self.media_preview_failed.discard(media_path)
-            self.root.after(0, self._render_lines)
-            self.root.after(0, lambda: self._save_config(show_status=False))
-            self.message_queue.put(("done", f"Imagem gerada e aplicada na frase {index + 1}."))
-        except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
-            self.message_queue.put(("error", str(exc)))
-
-    def _groq_image_prompt(self, index: int) -> str:
-        context = "\n".join(f"{line_index}. {line.text}" for line_index, line in enumerate(self.lines, start=1))
-        prompt = (
-            "Crie um prompt em inglês para gerar uma imagem vertical 9:16 em Stable Diffusion local. "
-            "A imagem deve representar a frase indicada e manter o tema central do roteiro. "
-            "Descreva cena, sujeito, ambiente, composição, iluminação e estilo cinematográfico/fotorrealista. "
-            "Evite texto, letras, logotipos, marcas d'água, molduras e elementos fora do contexto. "
-            "Responda somente JSON válido no formato {\"prompt\":\"...\"}.\n\n"
-            f"Título do vídeo / assunto principal: {self.video_title.get().strip() or 'video'}\n"
-            f"Palavras-chave do assunto: {self._script_subject_keywords()}\n"
-            f"Frase selecionada ({index + 1}): {self.lines[index].text}\n"
-            f"Roteiro completo:\n{context}"
-        )
-        content = self._groq_chat_content(
-            messages=[
-                {"role": "system", "content": "Você cria prompts visuais curtos e precisos para Stable Diffusion local."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.45,
-            max_tokens=420,
-        )
-        try:
-            data = self._json_object_from_text(content)
-            raw_prompt = str(data.get("prompt", ""))
-        except json.JSONDecodeError:
-            raw_prompt = content
-        clean_prompt = self._clean_image_prompt(raw_prompt)
-        if not clean_prompt:
-            raise RuntimeError("O Groq não retornou um prompt de imagem.")
-        return clean_prompt
-
-    @staticmethod
-    def _clean_image_prompt(prompt: str) -> str:
-        # Mantém o prompt em uma linha para evitar payloads inválidos ou muito verbosos no gerador local.
-        text = " ".join(str(prompt).replace("\n", " ").split()).strip(' ,.;:[]{}"\'')
-        # Remove wrappers comuns quando o modelo insiste em responder texto ao redor do JSON.
-        text = re.sub(r'^prompt\s*[:=-]\s*', "", text, flags=re.IGNORECASE).strip(' ,.;:[]{}"\'')
-        text = text.replace('"', "")
-        return text[:1200]
-
-
-    def _load_local_image_pipeline(self) -> Any:
-        self._ensure_local_image_dependencies()
-
-        import torch
-        from diffusers import AutoPipelineForText2Image
-
-        model_id = self.local_image_model.get().strip() or DEFAULT_LOCAL_IMAGE_MODEL
-        device = self._local_image_device(torch)
-        pipeline_key = (model_id, device)
-        if self.local_image_pipeline is not None and self.local_image_pipeline_key == pipeline_key:
-            return self.local_image_pipeline
-
-        dtype = torch.float16 if device == "cuda" else torch.float32
-        try:
-            pipeline = AutoPipelineForText2Image.from_pretrained(
-                model_id,
-                torch_dtype=dtype,
-                use_safetensors=True,
-            )
-        except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
-            raise RuntimeError(
-                "Não consegui carregar o modelo local de imagem.\n\n"
-                f"Modelo configurado: {model_id}\n\n"
-                "Use um ID do Hugging Face já baixado no cache ou uma pasta local com um modelo Diffusers. "
-                "Na primeira execução, o Diffusers pode baixar o modelo automaticamente se houver internet e permissão.\n\n"
-                f"Detalhe técnico: {exc}"
-            ) from exc
-
-        pipeline = pipeline.to(device)
-        if device == "cuda" and hasattr(pipeline, "enable_xformers_memory_efficient_attention"):
-            try:
-                pipeline.enable_xformers_memory_efficient_attention()
-            except Exception:
-                # xFormers é opcional; se não estiver instalado, attention slicing ainda reduz memória.
-                pass
-        if hasattr(pipeline, "enable_attention_slicing"):
-            pipeline.enable_attention_slicing()
-        self.local_image_pipeline = pipeline
-        self.local_image_pipeline_key = pipeline_key
-        return pipeline
-
-    @staticmethod
-    def _ensure_local_image_dependencies() -> None:
-        missing = [module for module in ("torch", "diffusers", "transformers", "accelerate") if importlib.util.find_spec(module) is None]
-        if missing:
-            raise RuntimeError(
-                "Dependências da IA local não instaladas: " + ", ".join(missing) + ".\n\n"
-                "Execute `pip install -r requirements.txt` no ambiente do app e tente Gerar imagem novamente."
-            )
-
-    def _local_image_device(self, torch_module: Any) -> str:
-        selected = self.local_image_device.get().strip().lower()
-        cuda_available = getattr(torch_module.cuda, "is_available", lambda: False)()
-        mps_backend = getattr(getattr(torch_module, "backends", None), "mps", None)
-        mps_available = mps_backend is not None and getattr(mps_backend, "is_available", lambda: False)()
-        if selected == "cuda":
-            if cuda_available:
-                return "cuda"
-            raise RuntimeError(
-                "A opção CUDA está selecionada, mas o PyTorch não encontrou uma GPU NVIDIA disponível.\n\n"
-                "Para gerar com GPU, instale uma versão do PyTorch com CUDA no ambiente do app "
-                "e confirme que o driver NVIDIA está atualizado. Se quiser testar sem GPU, mude "
-                "Dispositivo da IA local para CPU ou Auto na aba APIs."
-            )
-        if selected == "mps":
-            if mps_available:
-                return "mps"
-            raise RuntimeError("A opção MPS está selecionada, mas o PyTorch não encontrou GPU Apple MPS disponível.")
-        if selected == "cpu":
-            return "cpu"
-        if cuda_available:
-            return "cuda"
-        if mps_available:
-            return "mps"
-        return "cpu"
-
-    def _local_ai_txt2img(self, prompt: str) -> bytes:
-        pipeline = self._load_local_image_pipeline()
-        steps = self._safe_int(self.local_image_steps.get(), LOCAL_IMAGE_STEPS, 1, 80)
-        negative_prompt = "text, letters, logo, watermark, blurry, low quality, distorted, deformed, bad anatomy"
-        try:
-            result = pipeline(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                width=LOCAL_IMAGE_WIDTH,
-                height=LOCAL_IMAGE_HEIGHT,
-                num_inference_steps=steps,
-                guidance_scale=7.0,
-            )
-        except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
-            raise RuntimeError(
-                "A IA local não conseguiu renderizar a imagem.\n\n"
-                "Tente reduzir os passos, selecionar CPU/Auto, ou usar um modelo menor na aba APIs.\n\n"
-                f"Detalhe técnico: {exc}"
-            ) from exc
-
-        images = getattr(result, "images", None)
-        if not images:
-            raise RuntimeError("A IA local não retornou imagem.")
-        output = BytesIO()
-        images[0].save(output, format="PNG")
-        return output.getvalue()
-
-    def _save_ai_image(self, image_bytes: bytes, index: int) -> str:
-        AI_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-        filename = f"frase_{index + 1:03d}_ia_{int(time.time() * 1000)}.png"
-        output_path = AI_IMAGE_DIR / filename
-        output_path.write_bytes(image_bytes)
-        return str(output_path)
 
     def _edit_line_link(self, index: int) -> None:
         line = self.lines[index]
@@ -1471,32 +1354,31 @@ class VideoGeneratorApp:
             self.message_queue.put(("error", str(exc)))
 
     def _generate_tts(self, text: str, output_path: Path) -> None:
-        """Gera áudio usando ChatGPT TTS via navegador."""
-        self._queue_status("Abrindo ChatGPT...", step=True)
+        """Gera áudio usando Qwen TTS via navegador."""
+        self._queue_status("Abrindo Qwen...", step=True)
         
-        # Abre o ChatGPT
-        webbrowser.open("https://chatgpt.com/")
+        # Abre o Qwen
+        webbrowser.open(QWEN_URL)
         
         # Aguarda o navegador abrir
         time.sleep(5)
         
-        # Cola no campo de input do ChatGPT
-        pyperclip.copy(f"Apenas repita isso: {text}")
+        # Cola no campo de input do Qwen
+        pyperclip.copy(f'apenas repita isso: "{text}"')
         pyautogui.hotkey('ctrl', 'v')
         time.sleep(0.5)
+
+        before_capture = self._capture_chatgpt_window()
         
         # Pressiona Enter para enviar
         pyautogui.press('enter')
         
-        # Aguarda a resposta do ChatGPT
+        # Aguarda o Qwen concluir o pensamento e exibir a resposta
         response_wait = self._safe_float(self.chatgpt_response_wait.get(), 8.0, 1.0, 60.0)
-        self._queue_status(f"Aguardando resposta do ChatGPT ({response_wait}s)...", step=True)
-        time.sleep(response_wait)
+        self._queue_status(f"Aguardando “Pensamento concluído” no Qwen ({response_wait}s)...", step=True)
+        capture, _menu_point = self._wait_for_qwen_thought_completed(before_capture, response_wait)
         
-        # Captura a janela do ChatGPT
-        capture = self._capture_chatgpt_window()
-        
-        # Encontra e clica nos 3 pontinhos e "Ler em voz alta"
+        # Encontra e clica nos 3 pontinhos e "Leia em voz alta"
         self._click_read_aloud_simple(capture)
         
         # Grava o áudio do sistema
@@ -1505,78 +1387,65 @@ class VideoGeneratorApp:
         self._record_system_audio(output_path, record_duration)
     
     def _click_read_aloud_simple(self, capture: WindowCapture) -> None:
-        """Método simplificado para clicar nos 3 pontinhos e em Ler em voz alta.
+        """Método simplificado para clicar nos 3 pontinhos e em Leia em voz alta.
         
         Tenta primeiro encontrar os 3 pontinhos automaticamente usando processamento de imagem.
-        Se não encontrar, usa coordenadas relativas baseadas no tamanho da janela do ChatGPT.
+        Se não encontrar, usa coordenadas relativas baseadas no tamanho da janela do Qwen.
         As coordenadas podem ser ajustadas na aba Audio.
         """
         array = self._image_array(capture.image)
         height, width, _ = array.shape
-        
-        # Tenta encontrar os 3 pontinhos automaticamente
-        dots_point: ScreenPoint | None = None
-        try:
-            dots_point = self._find_response_more_button(capture.image)
-            self._queue_status(f"3 pontinhos encontrados automaticamente em ({dots_point.x}, {dots_point.y})...", step=True)
-        except RuntimeError:
-            # Fallback para coordenadas relativas fixas
-            dots_x_ratio = float(self.chatgpt_menu_x.get()) if self.chatgpt_menu_x.get() else 0.92
-            dots_y_ratio = float(self.chatgpt_menu_y.get()) if self.chatgpt_menu_y.get() else 0.75
-            
-            dots_x = int(width * dots_x_ratio)
-            dots_y = int(height * dots_y_ratio)
-            dots_point = ScreenPoint(dots_x, dots_y)
-            self._queue_status(f"Usando coordenadas fixas para 3 pontinhos ({dots_x}, {dots_y})...", step=True)
-        
-        # Clica nos 3 pontinhos
-        pyautogui.click(capture.offset_x + dots_point.x, capture.offset_y + dots_point.y)
-        time.sleep(0.5)
-        
-        # Aguarda o menu aparecer
+        menu_candidates = self._rank_response_more_candidates(capture.image, self._response_more_candidates(capture.image))
+        if menu_candidates:
+            self._queue_status(f"Testando {min(len(menu_candidates), 8)} candidato(s) de 3 pontinhos...", step=True)
+        else:
+            self._queue_status("3 pontinhos não detectados; usando fallback por coordenadas.", step=True)
+
+        dots_x_ratio = self._safe_float(self.chatgpt_menu_x.get(), 0.92, 0.0, 1.0)
+        dots_y_ratio = self._safe_float(self.chatgpt_menu_y.get(), 0.75, 0.0, 1.0)
+        fallback_candidate = ScreenPoint(int(width * dots_x_ratio), int(height * dots_y_ratio))
+        if not any(abs(candidate.x - fallback_candidate.x) <= 8 and abs(candidate.y - fallback_candidate.y) <= 8 for candidate in menu_candidates):
+            menu_candidates.append(fallback_candidate)
+
         menu_wait = self._safe_float(self.chatgpt_menu_wait.get(), 1.0, 0.2, 10.0)
-        time.sleep(menu_wait)
-        
-        # Captura novamente após abrir o menu para obter as dimensões corretas do menu
-        menu_capture = self._capture_chatgpt_window()
-        menu_array = self._image_array(menu_capture.image)
-        menu_height, menu_width, _ = menu_array.shape
-        
-        # Tenta encontrar "Ler em voz alta" automaticamente no menu aberto
-        read_point: ScreenPoint | None = None
-        try:
-            # Usa o método existente que já sabe encontrar o item do menu
-            read_local_point = self._find_read_aloud_point(capture.image, menu_capture.image, dots_point, menu_capture)
-            read_point = self._to_screen(menu_capture, read_local_point)
-            self._queue_status(f"'Ler em voz alta' encontrado automaticamente em ({read_point.x}, {read_point.y})...", step=True)
-        except (RuntimeError, Exception):
-            # Fallback para coordenadas relativas fixas
-            read_x_ratio = float(self.chatgpt_read_x.get()) if self.chatgpt_read_x.get() else 0.88
-            read_y_ratio = float(self.chatgpt_read_y.get()) if self.chatgpt_read_y.get() else 0.82
-            
-            read_x = int(menu_width * read_x_ratio)
-            read_y = int(menu_height * read_y_ratio)
-            read_point = ScreenPoint(read_x, read_y)
-            self._queue_status(f"Usando coordenadas fixas para 'Ler em voz alta' ({read_x}, {read_y})...", step=True)
-        
-        # Valida se as coordenadas estão dentro dos limites seguros
-        screen_width, screen_height = pyautogui.size()
-        safe_margin = 50  # Margem de segurança dos cantos
-        
-        final_x = min(max(menu_capture.offset_x + read_point.x, safe_margin), screen_width - safe_margin)
-        final_y = min(max(menu_capture.offset_y + read_point.y, safe_margin), screen_height - safe_margin)
-        
-        self._queue_status(f"Clicando em 'Ler em voz alta' ({final_x}, {final_y})...", step=True)
-        
-        # Desabilita temporariamente o failsafe para cliques controlados
-        old_failsafe = pyautogui.FAILSAFE
+        read_x_ratio = self._safe_float(self.chatgpt_read_x.get(), 0.88, 0.0, 1.0)
+        read_y_ratio = self._safe_float(self.chatgpt_read_y.get(), 0.82, 0.0, 1.0)
+        old_failsafe = getattr(pyautogui, "FAILSAFE", True)
         pyautogui.FAILSAFE = False
         try:
-            # Clica em "Ler em voz alta"
-            pyautogui.click(final_x, final_y)
-            time.sleep(0.5)
+            for local_menu_point in menu_candidates[:8]:
+                screen_menu_point = self._to_screen(capture, local_menu_point)
+                pyautogui.press("esc")
+                time.sleep(0.08)
+                self._queue_status(f"Clicando nos 3 pontinhos em ({screen_menu_point.x}, {screen_menu_point.y})...", step=True)
+                pyautogui.click(screen_menu_point.x, screen_menu_point.y)
+                time.sleep(menu_wait)
+
+                menu_capture = self._capture_chatgpt_window()
+                try:
+                    read_local_point = self._find_read_aloud_point(capture.image, menu_capture.image, screen_menu_point, menu_capture)
+                    read_screen_point = self._to_screen(menu_capture, read_local_point)
+                    self._queue_status(f"'Leia em voz alta' encontrado automaticamente em ({read_screen_point.x}, {read_screen_point.y})...", step=True)
+                except RuntimeError:
+                    if local_menu_point != fallback_candidate:
+                        continue
+                    menu_array = self._image_array(menu_capture.image)
+                    menu_height, menu_width, _ = menu_array.shape
+                    read_screen_point = ScreenPoint(
+                        menu_capture.offset_x + int(menu_width * read_x_ratio),
+                        menu_capture.offset_y + int(menu_height * read_y_ratio),
+                    )
+                    self._queue_status(f"Usando coordenadas fixas para 'Leia em voz alta' ({read_screen_point.x}, {read_screen_point.y})...", step=True)
+
+                final_x, final_y = self._safe_screen_point(read_screen_point)
+                self._queue_status(f"Clicando em 'Leia em voz alta' ({final_x}, {final_y})...", step=True)
+                pyautogui.click(final_x, final_y)
+                time.sleep(0.5)
+                return
         finally:
             pyautogui.FAILSAFE = old_failsafe
+
+        raise RuntimeError("Não consegui abrir o menu de leitura em voz alta nos 3 pontinhos da resposta do Qwen.")
 
     def _play_read_aloud_and_record(
         self,
@@ -1643,6 +1512,14 @@ class VideoGeneratorApp:
     @staticmethod
     def _to_screen(capture: WindowCapture, point: ScreenPoint) -> ScreenPoint:
         return ScreenPoint(capture.offset_x + point.x, capture.offset_y + point.y)
+
+    @staticmethod
+    def _safe_screen_point(point: ScreenPoint, margin: int = 50) -> tuple[int, int]:
+        screen_width, screen_height = pyautogui.size()
+        return (
+            min(max(point.x, margin), screen_width - margin),
+            min(max(point.y, margin), screen_height - margin),
+        )
 
     @staticmethod
     def _image_array(image: Any) -> np.ndarray:
@@ -1767,9 +1644,15 @@ class VideoGeneratorApp:
             return capture, self._select_response_more_candidate(capture.image, after_candidates)
 
         raise RuntimeError(
-            "Não consegui localizar os 3 pontinhos da resposta do ChatGPT depois da espera configurada. "
-            "Aumente o tempo de espera da resposta na aba Audio se o ChatGPT ainda estiver escrevendo."
+            "Não consegui localizar os 3 pontinhos da resposta do Qwen depois da espera configurada. "
+            "Aumente o tempo de espera da resposta na aba Audio se o Qwen ainda estiver escrevendo."
         )
+
+    def _wait_for_qwen_thought_completed(self, before_capture: WindowCapture, timeout: float) -> tuple[WindowCapture, ScreenPoint]:
+        # O Qwen mostra “Pensamento concluído” antes da resposta final e, em seguida,
+        # exibe a fileira de ações da resposta. Sem OCR, a confirmação robusta no app
+        # é aguardar a nova fileira de ações/3 pontinhos aparecer e ser ranqueada.
+        return self._wait_for_response_more_button(before_capture, timeout)
 
     def _best_response_more_candidate(
         self,
@@ -1810,7 +1693,7 @@ class VideoGeneratorApp:
     def _find_response_more_button(self, image: Any) -> ScreenPoint:
         candidates = self._response_more_candidates(image)
         if not candidates:
-            raise RuntimeError("Não consegui localizar os 3 pontinhos da resposta do ChatGPT na captura da janela.")
+            raise RuntimeError("Não consegui localizar os 3 pontinhos da resposta do Qwen na captura da janela.")
         return self._select_response_more_candidate(image, candidates)
 
     def _response_more_candidates(self, image: Any) -> list[ScreenPoint]:
@@ -1895,7 +1778,7 @@ class VideoGeneratorApp:
 
     @staticmethod
     def _action_row_more_candidates(components: list[ScreenBounds]) -> list[ScreenPoint]:
-        # Na UI atual do ChatGPT a resposta mostra uma fileira de ações
+        # Na UI atual do Qwen a resposta mostra uma fileira de ações
         # (copiar, compartilhar, regenerar e reticências). Quando as reticências
         # são desenhadas como SVG/anti-aliasing, detectar os três pontos isolados
         # pode falhar; nesse caso o botão de menu é o último ícone dessa fileira.
@@ -1993,7 +1876,7 @@ class VideoGeneratorApp:
         if not component:
             raise RuntimeError("O menu dos 3 pontinhos não apareceu perto do clique.")
         read_x = component.left + min(max(int(component.width * 0.28), 70), component.width - 12)
-        read_y = component.bottom - min(max(component.height // 7, 24), 36)
+        read_y = component.top + min(max(component.height // 5, 34), 56)
         return ScreenPoint(read_x, read_y)
 
     def _menu_component_near_click(self, before_image: Any, after_image: Any, clicked_menu_point: ScreenPoint, after_capture: WindowCapture) -> ScreenBounds | None:
@@ -2361,6 +2244,31 @@ class VideoGeneratorApp:
             return f"pexels:{match.group(1)}"
         return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", "")).rstrip("/")
 
+    def _logo_file_path(self) -> Path | None:
+        clean_path = self.logo_path.get().strip()
+        if not clean_path:
+            return None
+        path = Path(clean_path).expanduser()
+        if path.exists() and path.suffix.lower() == ".png" and self._logo_size_fraction() > 0:
+            return path
+        return None
+
+    def _logo_size_fraction(self) -> float:
+        return self._safe_float(self.logo_size.get(), 20.0, 0.0, 100.0) / 100.0
+
+    def _logo_overlay_expression(self) -> tuple[str, str]:
+        margin = 36
+        position = self.logo_position.get().lower()
+        x = str(margin) if "esquerdo" in position else f"W-w-{margin}"
+        y = str(margin) if "superior" in position else f"H-h-{margin}"
+        return x, y
+
+    def _logo_preview_coordinates(self, canvas_width: int, canvas_height: int, logo_width: int, logo_height: int, margin: int) -> tuple[int, int]:
+        position = self.logo_position.get().lower()
+        x = margin if "esquerdo" in position else canvas_width - logo_width - margin
+        y = margin if "superior" in position else canvas_height - logo_height - margin
+        return max(0, x), max(0, y)
+
     def _create_clip(self, ffmpeg: str, media_path: Path, audio_path: Path, clip_path: Path, subtitle_text: str) -> None:
         audio_duration = self._audio_duration(audio_path)
         image_exts = {".jpg", ".jpeg", ".png", ".webp"}
@@ -2374,10 +2282,21 @@ class VideoGeneratorApp:
         else:
             duration = audio_duration
         video_filter = self._video_filter(subtitle_text, clip_path.with_suffix(".subtitle.ass"), duration, audio_duration)
-        filter_complex = (
-            f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[v];"
-            f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
-        )
+        logo_path = self._logo_file_path()
+        if logo_path:
+            logo_width = max(1, int(1080 * self._logo_size_fraction()))
+            logo_x, logo_y = self._logo_overlay_expression()
+            filter_complex = (
+                f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[base];"
+                f"[2:v:0]format=rgba,scale={logo_width}:-1[logo];"
+                f"[base][logo]overlay={logo_x}:{logo_y}:format=auto[v];"
+                f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
+            )
+        else:
+            filter_complex = (
+                f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[v];"
+                f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
+            )
         if is_image:
             cmd = [
                 ffmpeg,
@@ -2390,6 +2309,10 @@ class VideoGeneratorApp:
                 str(media_path),
                 "-i",
                 str(audio_path),
+            ]
+            if logo_path:
+                cmd.extend(["-loop", "1", "-i", str(logo_path)])
+            cmd.extend([
                 "-filter_complex",
                 filter_complex,
                 "-map",
@@ -2403,7 +2326,7 @@ class VideoGeneratorApp:
                 "-c:a",
                 "aac",
                 str(clip_path),
-            ]
+            ])
         else:
             cmd = [ffmpeg, "-y"]
             if media_duration <= 0 or media_duration < duration - 0.05:
@@ -2414,6 +2337,12 @@ class VideoGeneratorApp:
                     str(media_path),
                     "-i",
                     str(audio_path),
+                ]
+            )
+            if logo_path:
+                cmd.extend(["-loop", "1", "-i", str(logo_path)])
+            cmd.extend(
+                [
                     "-t",
                     f"{duration:.3f}",
                     "-filter_complex",
