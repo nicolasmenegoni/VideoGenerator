@@ -38,6 +38,7 @@ CONFIG_FILE = Path.home() / ".videogenerator_config.json"
 VIDEO_SIZE = "1080:1920"
 FPS = "30"
 GROQ_MODEL = "llama-3.3-70b-versatile"
+QWEN_URL = "https://chat.qwen.ai/"
 DEFAULT_SCRIPT_TEXT = "Hoje vamos falar sobre a China.\nEsse país é incrível.\nVamos te provar."
 CLIPBOARD_MEDIA_DIR = Path.home() / ".videogenerator_media"
 LOGO_MEDIA_DIR = Path.home() / ".videogenerator_logos"
@@ -165,7 +166,7 @@ class VideoGeneratorApp:
         header = Frame(shell, bg="#f6f7fb")
         header.pack(fill=X, pady=(0, 12))
         Label(header, text="VideoGenerator", bg="#f6f7fb", fg="#111827", font=("Segoe UI", 24, "bold")).pack(anchor="w")
-        Label(header, text="Gere vídeos verticais com ChatGPT, Pexels e legendas em poucos cliques.", bg="#f6f7fb", fg="#657084", font=("Segoe UI", 10)).pack(anchor="w")
+        Label(header, text="Gere vídeos verticais com Qwen, Pexels e legendas em poucos cliques.", bg="#f6f7fb", fg="#657084", font=("Segoe UI", 10)).pack(anchor="w")
 
         nav = Frame(shell, bg="#eef1f8", padx=6, pady=6)
         nav.pack(fill=X, pady=(0, 12))
@@ -670,7 +671,7 @@ class VideoGeneratorApp:
         top = Frame(parent, bg="#ffffff")
         top.pack(fill=X)
         ttk.Label(top, text="Audio", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Configure as opções de geração de áudio usando ChatGPT via navegador.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
+        ttk.Label(top, text="Configure as opções de geração de áudio usando Qwen via navegador.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
 
         canvas = Canvas(parent, bd=0, highlightthickness=0, bg="#ffffff")
         canvas.pack(side=LEFT, fill=BOTH, expand=True)
@@ -685,18 +686,18 @@ class VideoGeneratorApp:
         canvas.bind("<MouseWheel>", lambda event: canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
 
         instructions = (
-            "O áudio será gerado usando o ChatGPT no navegador. O app abrirá uma janela do ChatGPT, enviará a frase e usará o recurso 'Ler em voz alta'. "
+            "O áudio será gerado usando o Qwen no navegador. O app abrirá uma janela do Qwen, enviará a frase, aguardará “Pensamento concluído” e usará o recurso “Leia em voz alta”. "
             "Certifique-se de que o volume do sistema esteja adequado para gravação."
         )
         Label(content, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
 
         chatgpt_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
         chatgpt_card.pack(fill=X, pady=(0, 12))
-        Label(chatgpt_card, text="Configurações do ChatGPT", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
+        Label(chatgpt_card, text="Configurações do Qwen", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
         
-        Label(chatgpt_card, text="✓ O ChatGPT será aberto automaticamente durante a geração de áudio.", bg="#f8f9fd", fg="#059669", font=("Segoe UI", 9)).pack(anchor="w")
+        Label(chatgpt_card, text="✓ O Qwen será aberto automaticamente durante a geração de áudio.", bg="#f8f9fd", fg="#059669", font=("Segoe UI", 9)).pack(anchor="w")
         
-        Label(chatgpt_card, text="Dica: Ajuste os tempos de espera se o ChatGPT estiver lento para responder.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
+        Label(chatgpt_card, text="Dica: Ajuste os tempos de espera se o Qwen estiver lento para responder.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
 
     def _build_music_tab(self, parent: Frame) -> None:
         top = Frame(parent, bg="#ffffff")
@@ -1353,17 +1354,17 @@ class VideoGeneratorApp:
             self.message_queue.put(("error", str(exc)))
 
     def _generate_tts(self, text: str, output_path: Path) -> None:
-        """Gera áudio usando ChatGPT TTS via navegador."""
-        self._queue_status("Abrindo ChatGPT...", step=True)
+        """Gera áudio usando Qwen TTS via navegador."""
+        self._queue_status("Abrindo Qwen...", step=True)
         
-        # Abre o ChatGPT
-        webbrowser.open("https://chatgpt.com/")
+        # Abre o Qwen
+        webbrowser.open(QWEN_URL)
         
         # Aguarda o navegador abrir
         time.sleep(5)
         
-        # Cola no campo de input do ChatGPT
-        pyperclip.copy(f"Apenas repita isso: {text}")
+        # Cola no campo de input do Qwen
+        pyperclip.copy(f'apenas repita isso: "{text}"')
         pyautogui.hotkey('ctrl', 'v')
         time.sleep(0.5)
 
@@ -1372,12 +1373,12 @@ class VideoGeneratorApp:
         # Pressiona Enter para enviar
         pyautogui.press('enter')
         
-        # Aguarda a resposta do ChatGPT
+        # Aguarda o Qwen concluir o pensamento e exibir a resposta
         response_wait = self._safe_float(self.chatgpt_response_wait.get(), 8.0, 1.0, 60.0)
-        self._queue_status(f"Aguardando resposta do ChatGPT ({response_wait}s)...", step=True)
-        capture, _menu_point = self._wait_for_response_more_button(before_capture, response_wait)
+        self._queue_status(f"Aguardando “Pensamento concluído” no Qwen ({response_wait}s)...", step=True)
+        capture, _menu_point = self._wait_for_qwen_thought_completed(before_capture, response_wait)
         
-        # Encontra e clica nos 3 pontinhos e "Ler em voz alta"
+        # Encontra e clica nos 3 pontinhos e "Leia em voz alta"
         self._click_read_aloud_simple(capture)
         
         # Grava o áudio do sistema
@@ -1386,10 +1387,10 @@ class VideoGeneratorApp:
         self._record_system_audio(output_path, record_duration)
     
     def _click_read_aloud_simple(self, capture: WindowCapture) -> None:
-        """Método simplificado para clicar nos 3 pontinhos e em Ler em voz alta.
+        """Método simplificado para clicar nos 3 pontinhos e em Leia em voz alta.
         
         Tenta primeiro encontrar os 3 pontinhos automaticamente usando processamento de imagem.
-        Se não encontrar, usa coordenadas relativas baseadas no tamanho da janela do ChatGPT.
+        Se não encontrar, usa coordenadas relativas baseadas no tamanho da janela do Qwen.
         As coordenadas podem ser ajustadas na aba Audio.
         """
         array = self._image_array(capture.image)
@@ -1424,7 +1425,7 @@ class VideoGeneratorApp:
                 try:
                     read_local_point = self._find_read_aloud_point(capture.image, menu_capture.image, screen_menu_point, menu_capture)
                     read_screen_point = self._to_screen(menu_capture, read_local_point)
-                    self._queue_status(f"'Ler em voz alta' encontrado automaticamente em ({read_screen_point.x}, {read_screen_point.y})...", step=True)
+                    self._queue_status(f"'Leia em voz alta' encontrado automaticamente em ({read_screen_point.x}, {read_screen_point.y})...", step=True)
                 except RuntimeError:
                     if local_menu_point != fallback_candidate:
                         continue
@@ -1434,17 +1435,17 @@ class VideoGeneratorApp:
                         menu_capture.offset_x + int(menu_width * read_x_ratio),
                         menu_capture.offset_y + int(menu_height * read_y_ratio),
                     )
-                    self._queue_status(f"Usando coordenadas fixas para 'Ler em voz alta' ({read_screen_point.x}, {read_screen_point.y})...", step=True)
+                    self._queue_status(f"Usando coordenadas fixas para 'Leia em voz alta' ({read_screen_point.x}, {read_screen_point.y})...", step=True)
 
                 final_x, final_y = self._safe_screen_point(read_screen_point)
-                self._queue_status(f"Clicando em 'Ler em voz alta' ({final_x}, {final_y})...", step=True)
+                self._queue_status(f"Clicando em 'Leia em voz alta' ({final_x}, {final_y})...", step=True)
                 pyautogui.click(final_x, final_y)
                 time.sleep(0.5)
                 return
         finally:
             pyautogui.FAILSAFE = old_failsafe
 
-        raise RuntimeError("Não consegui abrir o menu de leitura em voz alta nos 3 pontinhos da resposta do ChatGPT.")
+        raise RuntimeError("Não consegui abrir o menu de leitura em voz alta nos 3 pontinhos da resposta do Qwen.")
 
     def _play_read_aloud_and_record(
         self,
@@ -1643,9 +1644,15 @@ class VideoGeneratorApp:
             return capture, self._select_response_more_candidate(capture.image, after_candidates)
 
         raise RuntimeError(
-            "Não consegui localizar os 3 pontinhos da resposta do ChatGPT depois da espera configurada. "
-            "Aumente o tempo de espera da resposta na aba Audio se o ChatGPT ainda estiver escrevendo."
+            "Não consegui localizar os 3 pontinhos da resposta do Qwen depois da espera configurada. "
+            "Aumente o tempo de espera da resposta na aba Audio se o Qwen ainda estiver escrevendo."
         )
+
+    def _wait_for_qwen_thought_completed(self, before_capture: WindowCapture, timeout: float) -> tuple[WindowCapture, ScreenPoint]:
+        # O Qwen mostra “Pensamento concluído” antes da resposta final e, em seguida,
+        # exibe a fileira de ações da resposta. Sem OCR, a confirmação robusta no app
+        # é aguardar a nova fileira de ações/3 pontinhos aparecer e ser ranqueada.
+        return self._wait_for_response_more_button(before_capture, timeout)
 
     def _best_response_more_candidate(
         self,
@@ -1686,7 +1693,7 @@ class VideoGeneratorApp:
     def _find_response_more_button(self, image: Any) -> ScreenPoint:
         candidates = self._response_more_candidates(image)
         if not candidates:
-            raise RuntimeError("Não consegui localizar os 3 pontinhos da resposta do ChatGPT na captura da janela.")
+            raise RuntimeError("Não consegui localizar os 3 pontinhos da resposta do Qwen na captura da janela.")
         return self._select_response_more_candidate(image, candidates)
 
     def _response_more_candidates(self, image: Any) -> list[ScreenPoint]:
@@ -1771,7 +1778,7 @@ class VideoGeneratorApp:
 
     @staticmethod
     def _action_row_more_candidates(components: list[ScreenBounds]) -> list[ScreenPoint]:
-        # Na UI atual do ChatGPT a resposta mostra uma fileira de ações
+        # Na UI atual do Qwen a resposta mostra uma fileira de ações
         # (copiar, compartilhar, regenerar e reticências). Quando as reticências
         # são desenhadas como SVG/anti-aliasing, detectar os três pontos isolados
         # pode falhar; nesse caso o botão de menu é o último ícone dessa fileira.
@@ -1869,7 +1876,7 @@ class VideoGeneratorApp:
         if not component:
             raise RuntimeError("O menu dos 3 pontinhos não apareceu perto do clique.")
         read_x = component.left + min(max(int(component.width * 0.28), 70), component.width - 12)
-        read_y = component.bottom - min(max(component.height // 7, 24), 36)
+        read_y = component.top + min(max(component.height // 5, 34), 56)
         return ScreenPoint(read_x, read_y)
 
     def _menu_component_near_click(self, before_image: Any, after_image: Any, clicked_menu_point: ScreenPoint, after_capture: WindowCapture) -> ScreenBounds | None:

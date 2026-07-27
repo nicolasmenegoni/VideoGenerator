@@ -8,7 +8,7 @@ sys.modules.setdefault("soundcard", types.SimpleNamespace())
 
 from PIL import Image
 
-from app import ScreenPoint, VideoGeneratorApp
+from app import ScreenPoint, VideoGeneratorApp, WindowCapture
 
 
 class Value:
@@ -104,3 +104,17 @@ def test_more_button_selection_prefers_action_row_ellipsis_like_chatgpt_screensh
 
     assert abs(selected.x - 163) <= 10
     assert abs(selected.y - 420) <= 10
+
+
+def test_read_aloud_point_targets_qwen_top_menu_item() -> None:
+    app = object.__new__(VideoGeneratorApp)
+    before = Image.new("RGB", (900, 700), "white")
+    after = Image.new("RGB", (900, 700), "white")
+    for x in range(460, 740):
+        for y in range(260, 500):
+            after.putpixel((x, y), (245, 246, 250))
+
+    point = app._find_read_aloud_point(before, after, ScreenPoint(650, 245), WindowCapture(after, 0, 0))
+
+    assert 520 <= point.x <= 560
+    assert 300 <= point.y <= 320
