@@ -111,30 +111,31 @@ class VideoGeneratorApp:
         self.subtitle_outline_color = StringVar(value="#000000")
         self.subtitle_font = StringVar(value="Arial Black")
         self.subtitle_preview_text = StringVar(value="Hoje vamos falar sobre a China.")
-        self.chatgpt_shortcut = StringVar(value="alt+c")
-        self.chatgpt_response_wait = StringVar(value="8")
-        self.chatgpt_send_wait = StringVar(value="1")
-        self.chatgpt_menu_wait = StringVar(value="1")
-        self.chatgpt_menu_x = StringVar(value="0")
-        self.chatgpt_menu_y = StringVar(value="0")
-        self.chatgpt_input_x = StringVar(value="0")
-        self.chatgpt_input_y = StringVar(value="0")
-        self.chatgpt_send_x = StringVar(value="0")
-        self.chatgpt_send_y = StringVar(value="0")
-        self.chatgpt_read_x = StringVar(value="0")
-        self.chatgpt_read_y = StringVar(value="0")
-        self.chatgpt_record_extra = StringVar(value="2")
+        self.qwen_shortcut = StringVar(value="alt+c")
+        self.qwen_response_wait = StringVar(value="8")
+        self.qwen_send_wait = StringVar(value="1")
+        self.qwen_menu_wait = StringVar(value="1")
+        self.qwen_menu_x = StringVar(value="0")
+        self.qwen_menu_y = StringVar(value="0")
+        self.qwen_input_x = StringVar(value="0")
+        self.qwen_input_y = StringVar(value="0")
+        self.qwen_send_x = StringVar(value="0")
+        self.qwen_send_y = StringVar(value="0")
+        self.qwen_read_x = StringVar(value="0")
+        self.qwen_read_y = StringVar(value="0")
+        self.qwen_record_extra = StringVar(value="2")
         self.music_path = StringVar(value="")
         self.music_volume = StringVar(value="20")
         self.status_text = StringVar(value="Pronto.")
         self.progress_text = StringVar(value="")
-        self.chatgpt_window_ready = False
+        self.qwen_window_ready = False
         self.media_preview_images: dict[str, ImageTk.PhotoImage] = {}
         self.media_preview_bytes: dict[str, bytes] = {}
         self.media_preview_loading: set[str] = set()
         self.media_preview_failed: set[str] = set()
         self.logo_preview_image: ImageTk.PhotoImage | None = None
         self.script_text_value = DEFAULT_SCRIPT_TEXT
+        self.script_prompt_value = StringVar(value="")
         self.lines: list[ScriptLine] = []
         self.used_media_urls: set[str] = set()
         self.message_queue: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -254,6 +255,9 @@ class VideoGeneratorApp:
         Label(parent, text="Titulo", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         Entry(parent, textvariable=self.video_title, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 12)).pack(fill=X, ipady=10, pady=(6, 14))
 
+        Label(parent, text="Prompt para o roteiro (opcional)", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        Entry(parent, textvariable=self.script_prompt_value, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 12)).pack(fill=X, ipady=10, pady=(6, 14))
+
         self.script_text = Text(parent, height=12, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
         self.script_text.pack(fill=BOTH, expand=True)
         self.script_text.insert("1.0", self.script_text_value)
@@ -276,11 +280,12 @@ class VideoGeneratorApp:
         self.progress.configure(value=0, maximum=1)
         self.progress_text.set("Gerando roteiro...")
         self.status_text.set("Gerando roteiro com Groq...")
-        threading.Thread(target=self._generate_script_worker, args=(title,), daemon=True).start()
+        prompt = self.script_prompt_value.get().strip()
+        threading.Thread(target=self._generate_script_worker, args=(title, prompt), daemon=True).start()
 
-    def _generate_script_worker(self, title: str) -> None:
+    def _generate_script_worker(self, title: str, prompt: str = "") -> None:
         try:
-            lines = self._groq_script_lines(title)
+            lines = self._groq_script_lines(title, prompt)
             self.root.after(0, lambda: self._apply_generated_script(lines))
             self.message_queue.put(("done", "Roteiro gerado com Groq e salvo no app."))
         except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
@@ -293,8 +298,8 @@ class VideoGeneratorApp:
         self._refresh_lines()
         self.progress.configure(value=1)
 
-    def _groq_script_lines(self, title: str) -> list[str]:
-        prompt = (
+    def _groq_script_lines(self, title: str, prompt: str = "") -> list[str]:
+        base_prompt = (
             "Crie um roteiro curto para um vídeo vertical em português do Brasil com base no título informado. "
             "O roteiro deve ter de 6 a 10 frases curtas, naturais para narração em voz alta, com gancho no começo e fechamento no final. "
             "Cada frase deve funcionar como uma cena separada do vídeo. "
@@ -302,10 +307,12 @@ class VideoGeneratorApp:
             "Responda somente com as frases finais, uma por linha, sem JSON e sem texto extra.\n\n"
             f"Título: {title}"
         )
+        if prompt:
+            base_prompt = f"{prompt}\n\n{base_prompt}"
         content = self._groq_chat_content(
             messages=[
                 {"role": "system", "content": "Você cria roteiros curtos para vídeos verticais em português do Brasil."},
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": base_prompt},
             ],
             temperature=0.7,
             max_tokens=900,
@@ -691,13 +698,13 @@ class VideoGeneratorApp:
         )
         Label(content, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
 
-        chatgpt_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
-        chatgpt_card.pack(fill=X, pady=(0, 12))
-        Label(chatgpt_card, text="Configurações do Qwen", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
+        qwen_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
+        qwen_card.pack(fill=X, pady=(0, 12))
+        Label(qwen_card, text="Configurações do Qwen", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
         
-        Label(chatgpt_card, text="✓ O Qwen será aberto automaticamente durante a geração de áudio.", bg="#f8f9fd", fg="#059669", font=("Segoe UI", 9)).pack(anchor="w")
+        Label(qwen_card, text="✓ O Qwen será aberto automaticamente durante a geração de áudio.", bg="#f8f9fd", fg="#059669", font=("Segoe UI", 9)).pack(anchor="w")
         
-        Label(chatgpt_card, text="Dica: Ajuste os tempos de espera se o Qwen estiver lento para responder.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
+        Label(qwen_card, text="Dica: Ajuste os tempos de espera se o Qwen estiver lento para responder.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
 
     def _build_music_tab(self, parent: Frame) -> None:
         top = Frame(parent, bg="#ffffff")
@@ -754,19 +761,19 @@ class VideoGeneratorApp:
                 self.subtitle_outline_color.set(data.get("subtitle_outline_color", self.subtitle_outline_color.get()))
                 self.subtitle_font.set(data.get("subtitle_font", self.subtitle_font.get()))
                 self.subtitle_preview_text.set(data.get("subtitle_preview_text", self.subtitle_preview_text.get()))
-                self.chatgpt_shortcut.set(data.get("chatgpt_shortcut", self.chatgpt_shortcut.get()))
-                self.chatgpt_response_wait.set(data.get("chatgpt_response_wait", self.chatgpt_response_wait.get()))
-                self.chatgpt_send_wait.set(data.get("chatgpt_send_wait", self.chatgpt_send_wait.get()))
-                self.chatgpt_menu_wait.set(data.get("chatgpt_menu_wait", self.chatgpt_menu_wait.get()))
-                self.chatgpt_menu_x.set(data.get("chatgpt_menu_x", self.chatgpt_menu_x.get()))
-                self.chatgpt_menu_y.set(data.get("chatgpt_menu_y", self.chatgpt_menu_y.get()))
-                self.chatgpt_input_x.set(data.get("chatgpt_input_x", self.chatgpt_input_x.get()))
-                self.chatgpt_input_y.set(data.get("chatgpt_input_y", self.chatgpt_input_y.get()))
-                self.chatgpt_send_x.set(data.get("chatgpt_send_x", self.chatgpt_send_x.get()))
-                self.chatgpt_send_y.set(data.get("chatgpt_send_y", self.chatgpt_send_y.get()))
-                self.chatgpt_read_x.set(data.get("chatgpt_read_x", self.chatgpt_read_x.get()))
-                self.chatgpt_read_y.set(data.get("chatgpt_read_y", self.chatgpt_read_y.get()))
-                self.chatgpt_record_extra.set(data.get("chatgpt_record_extra", self.chatgpt_record_extra.get()))
+                self.qwen_shortcut.set(data.get("qwen_shortcut", self.qwen_shortcut.get()))
+                self.qwen_response_wait.set(data.get("qwen_response_wait", self.qwen_response_wait.get()))
+                self.qwen_send_wait.set(data.get("qwen_send_wait", self.qwen_send_wait.get()))
+                self.qwen_menu_wait.set(data.get("qwen_menu_wait", self.qwen_menu_wait.get()))
+                self.qwen_menu_x.set(data.get("qwen_menu_x", self.qwen_menu_x.get()))
+                self.qwen_menu_y.set(data.get("qwen_menu_y", self.qwen_menu_y.get()))
+                self.qwen_input_x.set(data.get("qwen_input_x", self.qwen_input_x.get()))
+                self.qwen_input_y.set(data.get("qwen_input_y", self.qwen_input_y.get()))
+                self.qwen_send_x.set(data.get("qwen_send_x", self.qwen_send_x.get()))
+                self.qwen_send_y.set(data.get("qwen_send_y", self.qwen_send_y.get()))
+                self.qwen_read_x.set(data.get("qwen_read_x", self.qwen_read_x.get()))
+                self.qwen_read_y.set(data.get("qwen_read_y", self.qwen_read_y.get()))
+                self.qwen_record_extra.set(data.get("qwen_record_extra", self.qwen_record_extra.get()))
                 self.music_path.set(data.get("music_path", self.music_path.get()))
                 self.music_volume.set(data.get("music_volume", self.music_volume.get()))
                 self.logo_path.set(data.get("logo_path", self.logo_path.get()))
@@ -782,6 +789,7 @@ class VideoGeneratorApp:
             "groq_key": self.groq_key.get().strip(),
             "video_title": self.video_title.get().strip(),
             "script_text": self.script_text_value,
+            "script_prompt": self.script_prompt_value.get().strip(),
             "script_lines": self._config_script_lines(),
             "output_dir": self.output_dir.get().strip(),
             "video_extra_after_audio": self.video_extra_after_audio.get().strip(),
@@ -795,19 +803,19 @@ class VideoGeneratorApp:
             "subtitle_outline_color": self.subtitle_outline_color.get().strip(),
             "subtitle_font": self.subtitle_font.get().strip(),
             "subtitle_preview_text": self.subtitle_preview_text.get().strip(),
-            "chatgpt_shortcut": self.chatgpt_shortcut.get().strip(),
-            "chatgpt_response_wait": self.chatgpt_response_wait.get().strip(),
-            "chatgpt_send_wait": self.chatgpt_send_wait.get().strip(),
-            "chatgpt_menu_wait": self.chatgpt_menu_wait.get().strip(),
-            "chatgpt_menu_x": self.chatgpt_menu_x.get().strip(),
-            "chatgpt_menu_y": self.chatgpt_menu_y.get().strip(),
-            "chatgpt_input_x": self.chatgpt_input_x.get().strip(),
-            "chatgpt_input_y": self.chatgpt_input_y.get().strip(),
-            "chatgpt_send_x": self.chatgpt_send_x.get().strip(),
-            "chatgpt_send_y": self.chatgpt_send_y.get().strip(),
-            "chatgpt_read_x": self.chatgpt_read_x.get().strip(),
-            "chatgpt_read_y": self.chatgpt_read_y.get().strip(),
-            "chatgpt_record_extra": self.chatgpt_record_extra.get().strip(),
+            "qwen_shortcut": self.qwen_shortcut.get().strip(),
+            "qwen_response_wait": self.qwen_response_wait.get().strip(),
+            "qwen_send_wait": self.qwen_send_wait.get().strip(),
+            "qwen_menu_wait": self.qwen_menu_wait.get().strip(),
+            "qwen_menu_x": self.qwen_menu_x.get().strip(),
+            "qwen_menu_y": self.qwen_menu_y.get().strip(),
+            "qwen_input_x": self.qwen_input_x.get().strip(),
+            "qwen_input_y": self.qwen_input_y.get().strip(),
+            "qwen_send_x": self.qwen_send_x.get().strip(),
+            "qwen_send_y": self.qwen_send_y.get().strip(),
+            "qwen_read_x": self.qwen_read_x.get().strip(),
+            "qwen_read_y": self.qwen_read_y.get().strip(),
+            "qwen_record_extra": self.qwen_record_extra.get().strip(),
             "music_path": self.music_path.get().strip(),
             "music_volume": self.music_volume.get().strip(),
             "logo_path": self.logo_path.get().strip(),
@@ -1295,7 +1303,7 @@ class VideoGeneratorApp:
             return
         out_dir = Path(self.output_dir.get()).expanduser()
         out_dir.mkdir(parents=True, exist_ok=True)
-        self.chatgpt_window_ready = False
+        self.qwen_window_ready = False
         self._save_config()
         self.progress.configure(value=0, maximum=max(len(self.lines) * 3 + 1, 1))
         self.progress_text.set("Gerando...")
@@ -1368,13 +1376,13 @@ class VideoGeneratorApp:
         pyautogui.hotkey('ctrl', 'v')
         time.sleep(0.5)
 
-        before_capture = self._capture_chatgpt_window()
+        before_capture = self._capture_qwen_window()
         
         # Pressiona Enter para enviar
         pyautogui.press('enter')
         
         # Aguarda o Qwen concluir o pensamento e exibir a resposta
-        response_wait = self._safe_float(self.chatgpt_response_wait.get(), 8.0, 1.0, 60.0)
+        response_wait = self._safe_float(self.qwen_response_wait.get(), 8.0, 1.0, 60.0)
         self._queue_status(f"Aguardando “Pensamento concluído” no Qwen ({response_wait}s)...", step=True)
         capture, _menu_point = self._wait_for_qwen_thought_completed(before_capture, response_wait)
         
@@ -1382,7 +1390,7 @@ class VideoGeneratorApp:
         self._click_read_aloud_simple(capture)
         
         # Grava o áudio do sistema
-        record_duration = self._safe_float(self.chatgpt_record_extra.get(), 2.0, 0.5, 30.0) + len(text) * 0.1
+        record_duration = self._safe_float(self.qwen_record_extra.get(), 2.0, 0.5, 30.0) + len(text) * 0.1
         self._queue_status("Gravando áudio do sistema...", step=True)
         self._record_system_audio(output_path, record_duration)
     
@@ -1401,15 +1409,15 @@ class VideoGeneratorApp:
         else:
             self._queue_status("3 pontinhos não detectados; usando fallback por coordenadas.", step=True)
 
-        dots_x_ratio = self._safe_float(self.chatgpt_menu_x.get(), 0.92, 0.0, 1.0)
-        dots_y_ratio = self._safe_float(self.chatgpt_menu_y.get(), 0.75, 0.0, 1.0)
+        dots_x_ratio = self._safe_float(self.qwen_menu_x.get(), 0.92, 0.0, 1.0)
+        dots_y_ratio = self._safe_float(self.qwen_menu_y.get(), 0.75, 0.0, 1.0)
         fallback_candidate = ScreenPoint(int(width * dots_x_ratio), int(height * dots_y_ratio))
         if not any(abs(candidate.x - fallback_candidate.x) <= 8 and abs(candidate.y - fallback_candidate.y) <= 8 for candidate in menu_candidates):
             menu_candidates.append(fallback_candidate)
 
-        menu_wait = self._safe_float(self.chatgpt_menu_wait.get(), 1.0, 0.2, 10.0)
-        read_x_ratio = self._safe_float(self.chatgpt_read_x.get(), 0.88, 0.0, 1.0)
-        read_y_ratio = self._safe_float(self.chatgpt_read_y.get(), 0.82, 0.0, 1.0)
+        menu_wait = self._safe_float(self.qwen_menu_wait.get(), 1.0, 0.2, 10.0)
+        read_x_ratio = self._safe_float(self.qwen_read_x.get(), 0.88, 0.0, 1.0)
+        read_y_ratio = self._safe_float(self.qwen_read_y.get(), 0.82, 0.0, 1.0)
         old_failsafe = getattr(pyautogui, "FAILSAFE", True)
         pyautogui.FAILSAFE = False
         try:
@@ -1421,7 +1429,7 @@ class VideoGeneratorApp:
                 pyautogui.click(screen_menu_point.x, screen_menu_point.y)
                 time.sleep(menu_wait)
 
-                menu_capture = self._capture_chatgpt_window()
+                menu_capture = self._capture_qwen_window()
                 try:
                     read_local_point = self._find_read_aloud_point(capture.image, menu_capture.image, screen_menu_point, menu_capture)
                     read_screen_point = self._to_screen(menu_capture, read_local_point)
@@ -1467,8 +1475,8 @@ class VideoGeneratorApp:
             pyautogui.press("esc")
             time.sleep(0.08)
             pyautogui.click(attempt.x, attempt.y)
-            time.sleep(self._safe_float(self.chatgpt_menu_wait.get(), 1.0, 0.2, 10.0))
-            candidate_capture = self._capture_chatgpt_window()
+            time.sleep(self._safe_float(self.qwen_menu_wait.get(), 1.0, 0.2, 10.0))
+            candidate_capture = self._capture_qwen_window()
             if not self._menu_component_near_click(response_capture.image, candidate_capture.image, attempt, candidate_capture):
                 continue
             try:
@@ -1488,11 +1496,11 @@ class VideoGeneratorApp:
         return self._record_system_audio(output_path, record_duration, on_ready=start_read_aloud)
 
     @staticmethod
-    def _chatgpt_repeat_prompt(text: str) -> str:
+    def _qwen_repeat_prompt(text: str) -> str:
         quoted_text = " ".join(text.replace('"', "'").split())
         return f'Responda somente com esta frase entre aspas, sem adicionar nada antes ou depois: "{quoted_text}"'
 
-    def _capture_chatgpt_window(self) -> WindowCapture:
+    def _capture_qwen_window(self) -> WindowCapture:
         window = None
         try:
             if hasattr(pyautogui, "getActiveWindow"):
@@ -1532,7 +1540,7 @@ class VideoGeneratorApp:
             array = array[:, :, :3]
         return array.astype(np.int16)
 
-    def _find_chatgpt_composer(self, image: Any) -> ScreenBounds:
+    def _find_qwen_composer(self, image: Any) -> ScreenBounds:
         array = self._image_array(image)
         height, width, _ = array.shape
         channels_spread = array.max(axis=2) - array.min(axis=2)
@@ -1561,7 +1569,7 @@ class VideoGeneratorApp:
         if segment_start is not None and height - segment_start >= 35:
             segments.append((segment_start, height))
         if not segments:
-            return self._fallback_chatgpt_composer(width, height)
+            return self._fallback_qwen_composer(width, height)
 
         top, bottom = max(segments, key=lambda item: item[1])
         band = gray_mask[top:bottom, :]
@@ -1569,15 +1577,15 @@ class VideoGeneratorApp:
         col_threshold = max(20, int((bottom - top) * 0.25))
         cols = np.where(col_counts >= col_threshold)[0]
         if cols.size == 0:
-            return self._fallback_chatgpt_composer(width, height)
+            return self._fallback_qwen_composer(width, height)
         left = max(int(cols[0]), int(width * 0.02))
         right = min(int(cols[-1]) + 1, int(width * 0.98))
         if bottom - top < 35 or right - left < max(120, int(width * 0.25)):
-            return self._fallback_chatgpt_composer(width, height)
+            return self._fallback_qwen_composer(width, height)
         return ScreenBounds(left, int(top), right, int(bottom))
 
     @staticmethod
-    def _fallback_chatgpt_composer(width: int, height: int) -> ScreenBounds:
+    def _fallback_qwen_composer(width: int, height: int) -> ScreenBounds:
         return ScreenBounds(
             max(12, int(width * 0.035)),
             max(0, height - max(120, int(height * 0.16))),
@@ -1589,7 +1597,7 @@ class VideoGeneratorApp:
     def _composer_input_point(composer: ScreenBounds) -> ScreenPoint:
         return ScreenPoint(composer.left + min(max(composer.width // 4, 80), 180), composer.top + composer.height // 2)
 
-    def _find_chatgpt_send_button(self, image: Any, composer: ScreenBounds) -> ScreenPoint:
+    def _find_qwen_send_button(self, image: Any, composer: ScreenBounds) -> ScreenPoint:
         array = self._image_array(image)
         search_left = composer.left + int(composer.width * 0.68)
         search = array[composer.top : composer.bottom, search_left : composer.right]
@@ -1607,13 +1615,13 @@ class VideoGeneratorApp:
         before_candidates = self._response_more_candidates(before_capture.image)
         time.sleep(max(timeout, 1.0))
 
-        capture = self._capture_chatgpt_window()
+        capture = self._capture_qwen_window()
         after_candidates = self._response_more_candidates(capture.image)
         best_candidate = self._best_response_more_candidate(before_capture.image, before_candidates, capture.image, after_candidates)
         if best_candidate is not None:
             return capture, best_candidate
 
-        revealed = self._capture_chatgpt_with_revealed_actions(capture)
+        revealed = self._capture_qwen_with_revealed_actions(capture)
         for reveal_capture in revealed:
             reveal_candidates = self._response_more_candidates(reveal_capture.image)
             best_candidate = self._best_response_more_candidate(before_capture.image, before_candidates, reveal_capture.image, reveal_candidates)
@@ -1626,12 +1634,12 @@ class VideoGeneratorApp:
         settle_deadline = time.monotonic() + 4.5
         while time.monotonic() < settle_deadline:
             time.sleep(0.35)
-            capture = self._capture_chatgpt_window()
+            capture = self._capture_qwen_window()
             after_candidates = self._response_more_candidates(capture.image)
             best_candidate = self._best_response_more_candidate(before_capture.image, before_candidates, capture.image, after_candidates)
             if best_candidate is not None:
                 return capture, best_candidate
-            for reveal_capture in self._capture_chatgpt_with_revealed_actions(capture):
+            for reveal_capture in self._capture_qwen_with_revealed_actions(capture):
                 reveal_candidates = self._response_more_candidates(reveal_capture.image)
                 best_candidate = self._best_response_more_candidate(before_capture.image, before_candidates, reveal_capture.image, reveal_candidates)
                 if best_candidate is not None:
@@ -1666,11 +1674,11 @@ class VideoGeneratorApp:
             or self._best_changed_more_candidate(before_image, after_image, after_candidates)
         )
 
-    def _capture_chatgpt_with_revealed_actions(self, capture: WindowCapture) -> list[WindowCapture]:
+    def _capture_qwen_with_revealed_actions(self, capture: WindowCapture) -> list[WindowCapture]:
         array = self._image_array(capture.image)
         height, width, _ = array.shape
         try:
-            composer = self._find_chatgpt_composer(capture.image)
+            composer = self._find_qwen_composer(capture.image)
             bottom_limit = max(composer.top - 18, int(height * 0.50))
         except RuntimeError:
             bottom_limit = int(height * 0.82)
@@ -1687,7 +1695,7 @@ class VideoGeneratorApp:
             for x in x_positions:
                 pyautogui.moveTo(capture.offset_x + x, capture.offset_y + y, duration=0.05)
                 time.sleep(0.12)
-                captures.append(self._capture_chatgpt_window())
+                captures.append(self._capture_qwen_window())
         return captures
 
     def _find_response_more_button(self, image: Any) -> ScreenPoint:
@@ -1708,7 +1716,7 @@ class VideoGeneratorApp:
         for dot_mask in dot_masks:
             dot_mask[: int(height * 0.14), :] = False
         try:
-            composer = self._find_chatgpt_composer(image)
+            composer = self._find_qwen_composer(image)
             if composer.top > int(height * 0.60):
                 for dot_mask in dot_masks:
                     dot_mask[max(composer.top - 4, 0) :, :] = False
@@ -1814,7 +1822,7 @@ class VideoGeneratorApp:
         array = self._image_array(image)
         height, width, _ = array.shape
         try:
-            composer = self._find_chatgpt_composer(image)
+            composer = self._find_qwen_composer(image)
             preferred_bottom = composer.top - 10
         except RuntimeError:
             preferred_bottom = int(height * 0.82)
@@ -2111,7 +2119,7 @@ class VideoGeneratorApp:
         return audio * max(gain, 1.0)
 
     def _estimated_tts_duration(self, text: str) -> float:
-        extra = self._safe_float(self.chatgpt_record_extra.get(), 2.0, 0.0, 30.0)
+        extra = self._safe_float(self.qwen_record_extra.get(), 2.0, 0.0, 30.0)
         return max(8.0, len(text) * 0.12 + extra)
 
     @staticmethod
@@ -2125,16 +2133,16 @@ class VideoGeneratorApp:
         end = min(int(loud[-1]) + padding, audio.size - 1)
         return audio[start : end + 1]
 
-    def _chatgpt_coordinates_ready(self) -> bool:
+    def _qwen_coordinates_ready(self) -> bool:
         values = [
-            self.chatgpt_input_x.get(),
-            self.chatgpt_input_y.get(),
-            self.chatgpt_send_x.get(),
-            self.chatgpt_send_y.get(),
-            self.chatgpt_menu_x.get(),
-            self.chatgpt_menu_y.get(),
-            self.chatgpt_read_x.get(),
-            self.chatgpt_read_y.get(),
+            self.qwen_input_x.get(),
+            self.qwen_input_y.get(),
+            self.qwen_send_x.get(),
+            self.qwen_send_y.get(),
+            self.qwen_menu_x.get(),
+            self.qwen_menu_y.get(),
+            self.qwen_read_x.get(),
+            self.qwen_read_y.get(),
         ]
         return all(self._safe_int(value, 0, 0, 10000) > 0 for value in values)
 
