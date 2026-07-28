@@ -823,7 +823,19 @@ class VideoGeneratorApp:
             self.status_text.set("Carregando modelo Kokoro...")
             self.root.update()
             
-            lang_code = self.tts_language.get().replace("-", "_")
+            # Mapeia o código de idioma para o formato do Kokoro
+            lang_mapping = {
+                "pt-br": "p",
+                "en-us": "a",
+                "en-gb": "b",
+                "es": "e",
+                "fr": "f",
+                "hi": "h",
+                "it": "i",
+                "ja": "j",
+                "zh": "z"
+            }
+            lang_code = lang_mapping.get(self.tts_language.get().lower(), "p")
             self.kokoro_pipeline = KPipeline(lang_code=lang_code)
             self.kokoro_model = KModel()
             self.kokoro_model.load()
@@ -860,7 +872,19 @@ class VideoGeneratorApp:
     def _generate_all_audios_worker(self) -> None:
         """Worker para gerar todos os áudios em thread separada."""
         try:
-            lang_code = self.tts_language.get().replace("-", "_")
+            # Mapeia o código de idioma para o formato do Kokoro
+            lang_mapping = {
+                "pt-br": "p",
+                "en-us": "a",
+                "en-gb": "b",
+                "es": "e",
+                "fr": "f",
+                "hi": "h",
+                "it": "i",
+                "ja": "j",
+                "zh": "z"
+            }
+            lang_code = lang_mapping.get(self.tts_language.get().lower(), "p")
             
             # Se tiver áudio de referência, tenta extrair embedding da voz
             voice_ref = None

@@ -1,23 +1,23 @@
-```
-# Dependencies
-__pycache__/
+```gitignore
+# Compiled and build artifacts
 *.pyc
-*.pyo
-*.pyd
-*.egg-info/
-.eggs/
+__pycache__/
+
+# Dependencies
 .venv/
 venv/
+pip-log.txt
+pipenv.lock
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Environment
 .env
 .env.local
-.env.*
-
-# Build artifacts
-build/
-dist/
-*.so
-*.dylib
-*.dll
+*.env.*
 
 # Editors
 .vscode/
@@ -25,16 +25,18 @@ dist/
 *.swp
 *.swo
 
-# Logs and temp files
-*.log
-*.tmp
-
-# Coverage
+# Coverage reports
 .coverage
 coverage/
 htmlcov/
 
-# Testing
-.pytest_cache/
-.mypy_cache/
+# Python specific
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.Python
+*.egg-info/
+.eggs/
 ```
