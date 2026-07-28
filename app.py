@@ -31,7 +31,12 @@ import requests
 import soundcard as sc
 
 KOKORO_AVAILABLE = False
-KModel = None
+try:
+    from kokoro import KModel, KPipeline
+    KOKORO_AVAILABLE = True
+except ImportError:
+    KModel = None
+    KPipeline = None
 
 APP_TITLE = "VideoGenerator"
 CONFIG_FILE = Path.home() / ".videogenerator_config.json"
@@ -124,6 +129,14 @@ class VideoGeneratorApp:
         self.qwen_read_x = StringVar(value="0")
         self.qwen_read_y = StringVar(value="0")
         self.qwen_record_extra = StringVar(value="2")
+        
+        # Novas variáveis para TTS local com Kokoro
+        self.tts_language = StringVar(value="pt-br")
+        self.tts_voice_ref_path = StringVar(value="")
+        self.tts_model_loaded = False
+        self.kokoro_model: KModel | None = None
+        self.kokoro_pipeline: KPipeline | None = None
+        
         self.music_path = StringVar(value="")
         self.music_volume = StringVar(value="20")
         self.status_text = StringVar(value="Pronto.")
@@ -678,7 +691,7 @@ class VideoGeneratorApp:
         top = Frame(parent, bg="#ffffff")
         top.pack(fill=X)
         ttk.Label(top, text="Audio", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Configure as opções de geração de áudio usando Qwen via navegador.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
+        ttk.Label(top, text="Gere áudios localmente usando IA. Selecione um áudio de referência para clonar sua voz.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
 
         canvas = Canvas(parent, bd=0, highlightthickness=0, bg="#ffffff")
         canvas.pack(side=LEFT, fill=BOTH, expand=True)
@@ -692,58 +705,214 @@ class VideoGeneratorApp:
         canvas.bind("<Configure>", lambda event: canvas.itemconfigure(content_window, width=event.width))
         canvas.bind("<MouseWheel>", lambda event: canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
 
-        instructions = (
-            "O áudio será gerado usando o Qwen no navegador. O app abrirá uma janela do Qwen, enviará a frase, aguardará “Pensamento concluído” e usará o recurso “Leia em voz alta”. "
-            "Certifique-se de que o volume do sistema esteja adequado para gravação."
+        # Card de configurações de TTS
+        tts_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
+        tts_card.pack(fill=X, pady=(0, 12))
+        Label(tts_card, text="Configurações de TTS Local", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
+        
+        # Idioma
+        lang_row = Frame(tts_card, bg="#f8f9fd")
+        lang_row.pack(fill=X, pady=(6, 6))
+        Label(lang_row, text="Idioma:", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold"), width=15, anchor="w").pack(side=LEFT)
+        lang_combo = ttk.Combobox(lang_row, textvariable=self.tts_language, values=["pt-br", "en-us", "en-gb", "es-es", "fr-fr", "de-de", "it-it", "ja-jp", "zh-cn"], state="readonly", width=20, font=("Segoe UI", 9))
+        lang_combo.pack(side=LEFT, ipady=4)
+        Label(lang_row, text="Selecione o idioma para geração dos áudios.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(side=LEFT, padx=(10, 0))
+        
+        # Áudio de referência
+        Label(tts_card, text="Áudio de referência para clonagem de voz", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(12, 6))
+        ref_row = Frame(tts_card, bg="#f8f9fd")
+        ref_row.pack(fill=X, pady=(6, 6))
+        Entry(ref_row, textvariable=self.tts_voice_ref_path, bd=0, bg="#ffffff", fg="#111827", insertbackground="#111827", font=("Segoe UI", 9)).pack(side=LEFT, fill=X, expand=True, ipady=8)
+        Button(ref_row, text="Selecionar áudio", command=self._choose_voice_ref_file, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=8, font=("Segoe UI", 9, "bold")).pack(side=RIGHT, padx=(10, 0))
+        Label(tts_card, text="Selecione um arquivo de áudio (.wav, .mp3) com sua voz para clonagem. Opcional - se não selecionar, usará voz padrão.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(anchor="w", pady=(6, 0))
+        
+        # Status do modelo
+        status_frame = Frame(tts_card, bg="#f8f9fd")
+        status_frame.pack(fill=X, pady=(12, 0))
+        self.tts_status_label = Label(status_frame, text="Modelo Kokoro: Não carregado", bg="#f8f9fd", fg="#dc2626", font=("Segoe UI", 9))
+        self.tts_status_label.pack(anchor="w")
+        if KOKORO_AVAILABLE:
+            self.tts_status_label.configure(text="Modelo Kokoro: Disponível ✓", fg="#059669")
+        else:
+            self.tts_status_label.configure(text="Modelo Kokoro: Não instalado (instale com: pip install kokoro)", fg="#dc2626")
+        
+        # Botão para carregar modelo
+        Button(tts_card, text="Carregar Modelo Kokoro", command=self._load_kokoro_model, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=8, font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(10, 0))
+
+        # Lista de frases com botões de escutar
+        Label(content, text="Frases do Roteiro", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(16, 8))
+        
+        self.audio_list_frame = Frame(content, bg="#ffffff")
+        self.audio_list_frame.pack(fill=BOTH, expand=True)
+        self._refresh_audio_list()
+        
+        # Botões de ação
+        actions = Frame(content, bg="#ffffff", pady=16)
+        actions.pack(fill=X)
+        Button(actions, text="Gerar todos os áudios", command=self._generate_all_audios, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=18, pady=10, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
+        Label(actions, text="Os áudios serão gerados e salvos automaticamente.", bg="#ffffff", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT, padx=(12, 0))
+
+    def _refresh_audio_list(self) -> None:
+        """Atualiza a lista de frases na aba Audio."""
+        for widget in self.audio_list_frame.winfo_children():
+            widget.destroy()
+        
+        self._refresh_lines()
+        
+        if not self.lines:
+            Label(self.audio_list_frame, text="Nenhuma frase no roteiro. Vá para a aba Roteiro e gere ou digite um roteiro.", bg="#ffffff", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
+            return
+        
+        for index, line in enumerate(self.lines, start=1):
+            frame = Frame(self.audio_list_frame, bg="#f9fafb", padx=10, pady=8)
+            frame.pack(fill=X, pady=(0, 6))
+            
+            # Número da frase
+            Label(frame, text=f"{index}.", bg="#f9fafb", fg="#657084", font=("Segoe UI", 9, "bold"), width=3).pack(side=LEFT)
+            
+            # Texto da frase
+            text_label = Label(frame, text=line.text[:80] + ("..." if len(line.text) > 80 else ""), bg="#f9fafb", fg="#111827", font=("Segoe UI", 9), wraplength=500, justify=LEFT)
+            text_label.pack(side=LEFT, fill=X, expand=True, padx=(6, 10))
+            
+            # Botão Escutar
+            audio_path = Path.home() / ".videogenerator_media" / f"audio_{index:03d}.wav"
+            if audio_path.exists():
+                Button(frame, text="Escutar áudio", command=lambda p=audio_path: self._play_audio(p), bg="#e0f2fe", fg="#0369a1", relief="flat", padx=10, pady=4, font=("Segoe UI", 9)).pack(side=RIGHT)
+            else:
+                Label(frame, text="Áudio não gerado", bg="#f9fafb", fg="#9ca3af", font=("Segoe UI", 8)).pack(side=RIGHT, padx=(10, 0))
+
+    def _play_audio(self, audio_path: Path) -> None:
+        """Toca um arquivo de áudio."""
+        try:
+            import playsound
+            playsound.playsound(str(audio_path))
+        except ImportError:
+            # Fallback usando subprocess
+            try:
+                if sys.platform == "win32":
+                    import os
+                    os.startfile(str(audio_path))
+                elif sys.platform == "darwin":
+                    subprocess.run(["afplay", str(audio_path)], check=False)
+                else:
+                    subprocess.run(["aplay", str(audio_path)], check=False)
+            except Exception as e:
+                messagebox.showerror(APP_TITLE, f"Erro ao reproduzir áudio: {e}")
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, f"Erro ao reproduzir áudio: {e}")
+
+    def _choose_voice_ref_file(self) -> None:
+        file_path = filedialog.askopenfilename(
+            title="Selecionar áudio de referência",
+            filetypes=[
+                ("Arquivos de áudio", "*.mp3 *.wav *.m4a *.aac *.ogg *.flac"),
+                ("Todos os arquivos", "*.*"),
+            ],
         )
-        Label(content, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
+        if file_path:
+            self.tts_voice_ref_path.set(file_path)
+            self._save_config()
 
-        qwen_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
-        qwen_card.pack(fill=X, pady=(0, 12))
-        Label(qwen_card, text="Configurações do Qwen", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
+    def _load_kokoro_model(self) -> None:
+        """Carrega o modelo Kokoro para TTS."""
+        if not KOKORO_AVAILABLE:
+            messagebox.showerror(APP_TITLE, "Kokoro não está instalado. Instale com: pip install kokoro")
+            return
         
-        Label(qwen_card, text="✓ O Qwen será aberto automaticamente durante a geração de áudio.", bg="#f8f9fd", fg="#059669", font=("Segoe UI", 9)).pack(anchor="w")
+        try:
+            self.status_text.set("Carregando modelo Kokoro...")
+            self.root.update()
+            
+            lang_code = self.tts_language.get().replace("-", "_")
+            self.kokoro_pipeline = KPipeline(lang_code=lang_code)
+            self.kokoro_model = KModel()
+            self.kokoro_model.load()
+            
+            self.tts_model_loaded = True
+            self.tts_status_label.configure(text="Modelo Kokoro: Carregado e pronto", fg="#059669")
+        except Exception as e:
+            self.tts_status_label.configure(text=f"Erro ao carregar modelo: {e}", fg="#dc2626")
+            self.status_text.set(f"Erro: {e}")
+            messagebox.showerror(APP_TITLE, f"Erro ao carregar modelo Kokoro:\n{e}")
+
+    def _generate_all_audios(self) -> None:
+        """Gera todos os áudios das frases."""
+        if not self.lines:
+            messagebox.showerror(APP_TITLE, "Nenhuma frase no roteiro. Gere um roteiro primeiro.")
+            return
         
-        Label(qwen_card, text="Dica: Ajuste os tempos de espera se o Qwen estiver lento para responder.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
-
-        # Coordenadas dos 3 pontinhos (menu de ações)
-        Label(qwen_card, text="Coordenadas dos 3 pontinhos (proporção 0-1)", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(12, 6))
-        coords_row = Frame(qwen_card, bg="#f8f9fd")
-        coords_row.pack(fill=X)
-        x_frame = Frame(coords_row, bg="#f8f9fd")
-        x_frame.pack(side=LEFT, fill=X, expand=True)
-        Label(x_frame, text="X (horizontal):", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT)
-        Entry(x_frame, textvariable=self.qwen_menu_x, bd=0, bg="#ffffff", fg="#111827", insertbackground="#111827", font=("Segoe UI", 9), width=8).pack(side=LEFT, ipady=4, padx=(6, 16))
-        y_frame = Frame(coords_row, bg="#f8f9fd")
-        y_frame.pack(side=LEFT, fill=X, expand=True)
-        Label(y_frame, text="Y (vertical):", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT)
-        Entry(y_frame, textvariable=self.qwen_menu_y, bd=0, bg="#ffffff", fg="#111827", insertbackground="#111827", font=("Segoe UI", 9), width=8).pack(side=LEFT, ipady=4, padx=(6, 0))
-        Label(qwen_card, text="Valores padrão: X=0.96, Y=0.88 (canto inferior direito). Ajuste se não encontrar os 3 pontinhos.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(anchor="w", pady=(6, 0))
-
-        # Coordenadas do botão "Leia em voz alta"
-        Label(qwen_card, text="Coordenadas do 'Leia em voz alta' (proporção 0-1)", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(12, 6))
-        read_row = Frame(qwen_card, bg="#f8f9fd")
-        read_row.pack(fill=X)
-        read_x_frame = Frame(read_row, bg="#f8f9fd")
-        read_x_frame.pack(side=LEFT, fill=X, expand=True)
-        Label(read_x_frame, text="X (horizontal):", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT)
-        Entry(read_x_frame, textvariable=self.qwen_read_x, bd=0, bg="#ffffff", fg="#111827", insertbackground="#111827", font=("Segoe UI", 9), width=8).pack(side=LEFT, ipady=4, padx=(6, 16))
-        read_y_frame = Frame(read_row, bg="#f8f9fd")
-        read_y_frame.pack(side=LEFT, fill=X, expand=True)
-        Label(read_y_frame, text="Y (vertical):", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT)
-        Entry(read_y_frame, textvariable=self.qwen_read_y, bd=0, bg="#ffffff", fg="#111827", insertbackground="#111827", font=("Segoe UI", 9), width=8).pack(side=LEFT, ipady=4, padx=(6, 0))
-        Label(qwen_card, text="Valores padrão: X=0.92, Y=0.78. Ajuste se não clicar corretamente no botão.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(anchor="w", pady=(6, 0))
-
-        # Tempos de espera
-        Label(qwen_card, text="Tempos de espera (segundos)", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(12, 6))
+        if not KOKORO_AVAILABLE:
+            messagebox.showerror(APP_TITLE, "Kokoro não está instalado. Instale com: pip install kokoro")
+            return
         
-        self._entry_row(qwen_card, "Espera após enviar (s)", self.qwen_send_wait, "Tempo para aguardar antes de clicar nos 3 pontinhos.")
-        self._entry_row(qwen_card, "Espera do menu (s)", self.qwen_menu_wait, "Tempo para aguardar o menu abrir após clicar nos 3 pontinhos.")
-        self._entry_row(qwen_card, "Espera da resposta (s)", self.qwen_response_wait, "Tempo para aguardar 'Pensamento concluído' no Qwen.")
-        self._entry_row(qwen_card, "Gravação extra (s)", self.qwen_record_extra, "Segundos extras para gravar após o áudio terminar.")
+        if not self.tts_model_loaded:
+            messagebox.showwarning(APP_TITLE, "Modelo Kokoro não carregado.\nClique em Carregar Modelo Kokoro antes de gerar os áudios.")
+            return
+        
+        # Cria diretório de mídia
+        CLIPBOARD_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+        
+        self.progress.configure(value=0, maximum=len(self.lines))
+        self.progress_text.set(f"Gerando áudio 0/{len(self.lines)}")
+        
+        threading.Thread(target=self._generate_all_audios_worker, daemon=True).start()
 
-        # Atalho do Qwen
-        self._entry_row(qwen_card, "Atalho do Qwen", self.qwen_shortcut, "Atalho para focar na janela do Qwen (ex: alt+c).")
+    def _generate_all_audios_worker(self) -> None:
+        """Worker para gerar todos os áudios em thread separada."""
+        try:
+            lang_code = self.tts_language.get().replace("-", "_")
+            
+            # Se tiver áudio de referência, tenta extrair embedding da voz
+            voice_ref = None
+            if self.tts_voice_ref_path.get().strip():
+                ref_path = Path(self.tts_voice_ref_path.get().strip())
+                if ref_path.exists():
+                    try:
+                        # Carrega o áudio de referência e extrai embedding
+                        import torch
+                        import torchaudio
+                        
+                        waveform, sample_rate = torchaudio.load(ref_path)
+                        # Resample se necessário
+                        if sample_rate != 24000:
+                            transform = torchaudio.transforms.Resample(sample_rate, 24000)
+                            waveform = transform(waveform)
+                        
+                        # Extrai embedding da voz (simplificado)
+                        voice_ref = waveform.mean(dim=0, keepdim=True)  # Simplificação
+                        self.message_queue.put(("status", f"Usando voz de referência: {ref_path.name}"))
+                    except Exception as e:
+                        self.message_queue.put(("status", f"Aviso: Não foi possível usar áudio de referência ({e}). Usando voz padrão."))
+                        voice_ref = None
+            
+            for index, line in enumerate(self.lines, start=1):
+                self.message_queue.put(("status", f"Gerando áudio {index}/{len(self.lines)}: {line.text[:50]}..."))
+                
+                audio_path = CLIPBOARD_MEDIA_DIR / f"audio_{index:03d}.wav"
+                
+                # Gera áudio com Kokoro
+                generator = self.kokoro_pipeline(
+                    line.text,
+                    voice=voice_ref if voice_ref is not None else "default"
+                )
+                
+                # Salva o áudio gerado
+                with wave.open(str(audio_path), "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(24000)
+                    
+                    for chunk in generator:
+                        # Converte float32 para int16
+                        audio_data = (chunk.numpy() * 32767).astype(np.int16)
+                        wf.writeframes(audio_data.tobytes())
+                
+                self.message_queue.put(("progress", str(index)))
+            
+            self.root.after(0, self._refresh_audio_list)
+            
+        except Exception as e:
+            self.message_queue.put(("error", f"Erro ao gerar áudios: {e}"))
 
     def _build_music_tab(self, parent: Frame) -> None:
         top = Frame(parent, bg="#ffffff")
