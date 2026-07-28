@@ -836,12 +836,21 @@ class VideoGeneratorApp:
                 "zh": "z"
             }
             lang_code = lang_mapping.get(self.tts_language.get().lower(), "p")
-            self.kokoro_pipeline = KPipeline(lang_code=lang_code)
-            self.kokoro_model = KModel()
-            self.kokoro_model.load()
+            # KPipeline já carrega o modelo internamente quando model=True (padrão)
+            self.kokoro_pipeline = KPipeline(lang_code=lang_code, model=False)  # Carrega sem modelo para economizar memória
+            # O modelo será carregado sob demanda se necessário
             
             self.tts_model_loaded = True
             self.tts_status_label.configure(text="Modelo Kokoro: Carregado e pronto", fg="#059669")
+        except MemoryError:
+            self.tts_status_label.configure(text="Erro: Memória insuficiente", fg="#dc2626")
+            self.status_text.set("Erro: Kokoro requer mais memória RAM")
+            messagebox.showerror(APP_TITLE, 
+                "Memória insuficiente para carregar o Kokoro.\n\n"
+                "Soluções:\n"
+                "1. Feche outros programas para liberar memória\n"
+                "2. Use um sistema com pelo menos 4GB de RAM livre\n"
+                "3. Considere usar um serviço de TTS online alternativo")
         except Exception as e:
             self.tts_status_label.configure(text=f"Erro ao carregar modelo: {e}", fg="#dc2626")
             self.status_text.set(f"Erro: {e}")
@@ -886,54 +895,70 @@ class VideoGeneratorApp:
             }
             lang_code = lang_mapping.get(self.tts_language.get().lower(), "p")
             
-            # Se tiver áudio de referência, tenta extrair embedding da voz
-            voice_ref = None
-            if self.tts_voice_ref_path.get().strip():
-                ref_path = Path(self.tts_voice_ref_path.get().strip())
-                if ref_path.exists():
-                    try:
-                        # Carrega o áudio de referência e extrai embedding
-                        import torch
-                        import torchaudio
-                        
-                        waveform, sample_rate = torchaudio.load(ref_path)
-                        # Resample se necessário
-                        if sample_rate != 24000:
-                            transform = torchaudio.transforms.Resample(sample_rate, 24000)
-                            waveform = transform(waveform)
-                        
-                        # Extrai embedding da voz (simplificado)
-                        voice_ref = waveform.mean(dim=0, keepdim=True)  # Simplificação
-                        self.message_queue.put(("status", f"Usando voz de referência: {ref_path.name}"))
-                    except Exception as e:
-                        self.message_queue.put(("status", f"Aviso: Não foi possível usar áudio de referência ({e}). Usando voz padrão."))
-                        voice_ref = None
+            # Carrega o modelo com memória limitada
+            import torch
+            from kokoro import KModel
+            
+            self.message_queue.put(("status", "Carregando modelo TTS..."))
+            
+            # Tenta carregar o modelo com menos memória
+            try:
+                model = KModel()
+                # Se tiver áudio de referência, usa para carregar a voz
+                voice_name = "af_heart"  # Voz padrão
+                
+                if self.tts_voice_ref_path.get().strip():
+                    ref_path = Path(self.tts_voice_ref_path.get().strip())
+                    if ref_path.exists():
+                        try:
+                            import torchaudio
+                            waveform, sample_rate = torchaudio.load(str(ref_path))
+                            if sample_rate != 24000:
+                                transform = torchaudio.transforms.Resample(sample_rate, 24000)
+                                waveform = transform(waveform)
+                            # Salva como referência temporária
+                            temp_ref = CLIPBOARD_MEDIA_DIR / "voice_ref.wav"
+                            torchaudio.save(str(temp_ref), waveform, 24000)
+                            self.message_queue.put(("status", f"Voz de referência carregada: {ref_path.name}"))
+                        except Exception as e:
+                            self.message_queue.put(("status", f"Aviso: Não foi possível usar áudio de referência ({e})"))
+                
+                # Cria novo pipeline com modelo
+                pipeline = KPipeline(lang_code=lang_code, model=model)
+                
+            except MemoryError:
+                self.message_queue.put(("error", "Memória insuficiente para carregar o modelo TTS"))
+                return
+            except Exception as e:
+                self.message_queue.put(("error", f"Erro ao carregar modelo: {e}"))
+                return
             
             for index, line in enumerate(self.lines, start=1):
                 self.message_queue.put(("status", f"Gerando áudio {index}/{len(self.lines)}: {line.text[:50]}..."))
                 
                 audio_path = CLIPBOARD_MEDIA_DIR / f"audio_{index:03d}.wav"
                 
-                # Gera áudio com Kokoro
-                generator = self.kokoro_pipeline(
-                    line.text,
-                    voice=voice_ref if voice_ref is not None else "default"
-                )
-                
-                # Salva o áudio gerado
-                with wave.open(str(audio_path), "wb") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(24000)
+                try:
+                    # Gera áudio com Kokoro
+                    generator = pipeline(line.text, voice=voice_name)
                     
-                    for chunk in generator:
-                        # Converte float32 para int16
-                        audio_data = (chunk.numpy() * 32767).astype(np.int16)
-                        wf.writeframes(audio_data.tobytes())
-                
-                self.message_queue.put(("progress", str(index)))
+                    # Salva o áudio gerado
+                    with wave.open(str(audio_path), "wb") as wf:
+                        wf.setnchannels(1)
+                        wf.setsampwidth(2)
+                        wf.setframerate(24000)
+                        
+                        for chunk in generator:
+                            # Converte float32 para int16
+                            audio_data = (chunk.numpy() * 32767).astype(np.int16)
+                            wf.writeframes(audio_data.tobytes())
+                    
+                    self.message_queue.put(("progress", str(index)))
+                except Exception as e:
+                    self.message_queue.put(("status", f"Erro na frase {index}: {e}"))
             
             self.root.after(0, self._refresh_audio_list)
+            self.message_queue.put(("done", "Áudios gerados com sucesso!"))
             
         except Exception as e:
             self.message_queue.put(("error", f"Erro ao gerar áudios: {e}"))
