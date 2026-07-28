@@ -258,14 +258,14 @@ class VideoGeneratorApp:
         Label(parent, text="Prompt para o roteiro (opcional)", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         Entry(parent, textvariable=self.script_prompt_value, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 12)).pack(fill=X, ipady=10, pady=(6, 14))
 
-        self.script_text = Text(parent, height=12, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
-        self.script_text.pack(fill=BOTH, expand=True)
-        self.script_text.insert("1.0", self.script_text_value)
-
         actions = Frame(parent, bg="#ffffff", pady=12)
         actions.pack(fill=X)
         Button(actions, text="Atualizar roteiro", command=self._refresh_lines, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
         Button(actions, text="Gerar roteiro", command=self._start_script_generation, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
+
+        self.script_text = Text(parent, height=12, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
+        self.script_text.pack(fill=BOTH, expand=True)
+        self.script_text.insert("1.0", self.script_text_value)
 
     def _start_script_generation(self) -> None:
         title = self.video_title.get().strip()
@@ -705,6 +705,45 @@ class VideoGeneratorApp:
         Label(qwen_card, text="✓ O Qwen será aberto automaticamente durante a geração de áudio.", bg="#f8f9fd", fg="#059669", font=("Segoe UI", 9)).pack(anchor="w")
         
         Label(qwen_card, text="Dica: Ajuste os tempos de espera se o Qwen estiver lento para responder.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
+
+        # Coordenadas dos 3 pontinhos (menu de ações)
+        Label(qwen_card, text="Coordenadas dos 3 pontinhos (proporção 0-1)", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(12, 6))
+        coords_row = Frame(qwen_card, bg="#f8f9fd")
+        coords_row.pack(fill=X)
+        x_frame = Frame(coords_row, bg="#f8f9fd")
+        x_frame.pack(side=LEFT, fill=X, expand=True)
+        Label(x_frame, text="X (horizontal):", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT)
+        Entry(x_frame, textvariable=self.qwen_menu_x, bd=0, bg="#ffffff", fg="#111827", insertbackground="#111827", font=("Segoe UI", 9), width=8).pack(side=LEFT, ipady=4, padx=(6, 16))
+        y_frame = Frame(coords_row, bg="#f8f9fd")
+        y_frame.pack(side=LEFT, fill=X, expand=True)
+        Label(y_frame, text="Y (vertical):", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT)
+        Entry(y_frame, textvariable=self.qwen_menu_y, bd=0, bg="#ffffff", fg="#111827", insertbackground="#111827", font=("Segoe UI", 9), width=8).pack(side=LEFT, ipady=4, padx=(6, 0))
+        Label(qwen_card, text="Valores padrão: X=0.96, Y=0.88 (canto inferior direito). Ajuste se não encontrar os 3 pontinhos.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(anchor="w", pady=(6, 0))
+
+        # Coordenadas do botão "Leia em voz alta"
+        Label(qwen_card, text="Coordenadas do 'Leia em voz alta' (proporção 0-1)", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(12, 6))
+        read_row = Frame(qwen_card, bg="#f8f9fd")
+        read_row.pack(fill=X)
+        read_x_frame = Frame(read_row, bg="#f8f9fd")
+        read_x_frame.pack(side=LEFT, fill=X, expand=True)
+        Label(read_x_frame, text="X (horizontal):", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT)
+        Entry(read_x_frame, textvariable=self.qwen_read_x, bd=0, bg="#ffffff", fg="#111827", insertbackground="#111827", font=("Segoe UI", 9), width=8).pack(side=LEFT, ipady=4, padx=(6, 16))
+        read_y_frame = Frame(read_row, bg="#f8f9fd")
+        read_y_frame.pack(side=LEFT, fill=X, expand=True)
+        Label(read_y_frame, text="Y (vertical):", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT)
+        Entry(read_y_frame, textvariable=self.qwen_read_y, bd=0, bg="#ffffff", fg="#111827", insertbackground="#111827", font=("Segoe UI", 9), width=8).pack(side=LEFT, ipady=4, padx=(6, 0))
+        Label(qwen_card, text="Valores padrão: X=0.92, Y=0.78. Ajuste se não clicar corretamente no botão.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(anchor="w", pady=(6, 0))
+
+        # Tempos de espera
+        Label(qwen_card, text="Tempos de espera (segundos)", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(12, 6))
+        
+        self._entry_row(qwen_card, "Espera após enviar (s)", self.qwen_send_wait, "Tempo para aguardar antes de clicar nos 3 pontinhos.")
+        self._entry_row(qwen_card, "Espera do menu (s)", self.qwen_menu_wait, "Tempo para aguardar o menu abrir após clicar nos 3 pontinhos.")
+        self._entry_row(qwen_card, "Espera da resposta (s)", self.qwen_response_wait, "Tempo para aguardar 'Pensamento concluído' no Qwen.")
+        self._entry_row(qwen_card, "Gravação extra (s)", self.qwen_record_extra, "Segundos extras para gravar após o áudio terminar.")
+
+        # Atalho do Qwen
+        self._entry_row(qwen_card, "Atalho do Qwen", self.qwen_shortcut, "Atalho para focar na janela do Qwen (ex: alt+c).")
 
     def _build_music_tab(self, parent: Frame) -> None:
         top = Frame(parent, bg="#ffffff")
@@ -1409,15 +1448,15 @@ class VideoGeneratorApp:
         else:
             self._queue_status("3 pontinhos não detectados; usando fallback por coordenadas.", step=True)
 
-        dots_x_ratio = self._safe_float(self.qwen_menu_x.get(), 0.92, 0.0, 1.0)
-        dots_y_ratio = self._safe_float(self.qwen_menu_y.get(), 0.75, 0.0, 1.0)
+        dots_x_ratio = self._safe_float(self.qwen_menu_x.get(), 0.96, 0.0, 1.0)
+        dots_y_ratio = self._safe_float(self.qwen_menu_y.get(), 0.88, 0.0, 1.0)
         fallback_candidate = ScreenPoint(int(width * dots_x_ratio), int(height * dots_y_ratio))
         if not any(abs(candidate.x - fallback_candidate.x) <= 8 and abs(candidate.y - fallback_candidate.y) <= 8 for candidate in menu_candidates):
             menu_candidates.append(fallback_candidate)
 
         menu_wait = self._safe_float(self.qwen_menu_wait.get(), 1.0, 0.2, 10.0)
-        read_x_ratio = self._safe_float(self.qwen_read_x.get(), 0.88, 0.0, 1.0)
-        read_y_ratio = self._safe_float(self.qwen_read_y.get(), 0.82, 0.0, 1.0)
+        read_x_ratio = self._safe_float(self.qwen_read_x.get(), 0.92, 0.0, 1.0)
+        read_y_ratio = self._safe_float(self.qwen_read_y.get(), 0.78, 0.0, 1.0)
         old_failsafe = getattr(pyautogui, "FAILSAFE", True)
         pyautogui.FAILSAFE = False
         try:
