@@ -13,7 +13,6 @@ import threading
 import urllib.parse
 import warnings
 import wave
-import webbrowser
 from io import BytesIO
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -25,9 +24,6 @@ from tkinter import font as tkfont
 import imageio_ffmpeg
 import numpy as np
 from PIL import Image, ImageGrab, ImageTk
-import pyautogui
-import pyperclip
-import requests
 import soundcard as sc
 
 KOKORO_AVAILABLE = False
@@ -1619,653 +1615,73 @@ class VideoGeneratorApp:
             self.message_queue.put(("error", str(exc)))
 
     def _generate_tts(self, text: str, output_path: Path) -> None:
-        """Gera áudio usando Qwen TTS via navegador."""
-        self._queue_status("Abrindo Qwen...", step=True)
+        """Gera áudio usando Kokoro TTS localmente."""
+        if not KOKORO_AVAILABLE:
+            raise RuntimeError("Kokoro não está instalado. Instale com: pip install kokoro")
         
-        # Abre o Qwen
-        webbrowser.open(QWEN_URL)
+        if not self.tts_model_loaded:
+            raise RuntimeError("Modelo Kokoro não carregado. Carregue o modelo na aba Audio primeiro.")
         
-        # Aguarda o navegador abrir
-        time.sleep(5)
-        
-        # Cola no campo de input do Qwen
-        pyperclip.copy(f'apenas repita isso: "{text}"')
-        pyautogui.hotkey('ctrl', 'v')
-        time.sleep(0.5)
-
-        before_capture = self._capture_qwen_window()
-        
-        # Pressiona Enter para enviar
-        pyautogui.press('enter')
-        
-        # Aguarda o Qwen concluir o pensamento e exibir a resposta
-        response_wait = self._safe_float(self.qwen_response_wait.get(), 8.0, 1.0, 60.0)
-        self._queue_status(f"Aguardando “Pensamento concluído” no Qwen ({response_wait}s)...", step=True)
-        capture, _menu_point = self._wait_for_qwen_thought_completed(before_capture, response_wait)
-        
-        # Encontra e clica nos 3 pontinhos e "Leia em voz alta"
-        self._click_read_aloud_simple(capture)
-        
-        # Grava o áudio do sistema
-        record_duration = self._safe_float(self.qwen_record_extra.get(), 2.0, 0.5, 30.0) + len(text) * 0.1
-        self._queue_status("Gravando áudio do sistema...", step=True)
-        self._record_system_audio(output_path, record_duration)
-    
-    def _click_read_aloud_simple(self, capture: WindowCapture) -> None:
-        """Método simplificado para clicar nos 3 pontinhos e em Leia em voz alta.
-        
-        Tenta primeiro encontrar os 3 pontinhos automaticamente usando processamento de imagem.
-        Se não encontrar, usa coordenadas relativas baseadas no tamanho da janela do Qwen.
-        As coordenadas podem ser ajustadas na aba Audio.
-        """
-        array = self._image_array(capture.image)
-        height, width, _ = array.shape
-        menu_candidates = self._rank_response_more_candidates(capture.image, self._response_more_candidates(capture.image))
-        if menu_candidates:
-            self._queue_status(f"Testando {min(len(menu_candidates), 8)} candidato(s) de 3 pontinhos...", step=True)
-        else:
-            self._queue_status("3 pontinhos não detectados; usando fallback por coordenadas.", step=True)
-
-        dots_x_ratio = self._safe_float(self.qwen_menu_x.get(), 0.96, 0.0, 1.0)
-        dots_y_ratio = self._safe_float(self.qwen_menu_y.get(), 0.88, 0.0, 1.0)
-        fallback_candidate = ScreenPoint(int(width * dots_x_ratio), int(height * dots_y_ratio))
-        if not any(abs(candidate.x - fallback_candidate.x) <= 8 and abs(candidate.y - fallback_candidate.y) <= 8 for candidate in menu_candidates):
-            menu_candidates.append(fallback_candidate)
-
-        menu_wait = self._safe_float(self.qwen_menu_wait.get(), 1.0, 0.2, 10.0)
-        read_x_ratio = self._safe_float(self.qwen_read_x.get(), 0.92, 0.0, 1.0)
-        read_y_ratio = self._safe_float(self.qwen_read_y.get(), 0.78, 0.0, 1.0)
-        old_failsafe = getattr(pyautogui, "FAILSAFE", True)
-        pyautogui.FAILSAFE = False
         try:
-            for local_menu_point in menu_candidates[:8]:
-                screen_menu_point = self._to_screen(capture, local_menu_point)
-                pyautogui.press("esc")
-                time.sleep(0.08)
-                self._queue_status(f"Clicando nos 3 pontinhos em ({screen_menu_point.x}, {screen_menu_point.y})...", step=True)
-                pyautogui.click(screen_menu_point.x, screen_menu_point.y)
-                time.sleep(menu_wait)
+            # Mapeia o código de idioma para o formato do Kokoro
+            lang_mapping = {
+                "pt-br": "p",
+                "en-us": "a",
+                "en-gb": "b",
+                "es-es": "e",
+                "fr-fr": "f",
+                "de-de": "g",
+                "it-it": "i",
+                "ja-jp": "j",
+                "zh-cn": "z"
+            }
+            lang_code = lang_mapping.get(self.tts_language.get().lower(), "p")
+            
+            # Carrega o modelo
+            model = KModel()
+            voice_name = "af_heart"  # Voz padrão
+            
+            # Se tiver áudio de referência, usa para carregar a voz
+            if self.tts_voice_ref_path.get().strip():
+                ref_path = Path(self.tts_voice_ref_path.get().strip())
+                if ref_path.exists():
+                    try:
+                        import torchaudio
+                        waveform, sample_rate = torchaudio.load(str(ref_path))
+                        if sample_rate != 24000:
+                            transform = torchaudio.transforms.Resample(sample_rate, 24000)
+                            waveform = transform(waveform)
+                        # Salva como referência temporária
+                        temp_ref = CLIPBOARD_MEDIA_DIR / "voice_ref.wav"
+                        CLIPBOARD_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+                        torchaudio.save(str(temp_ref), waveform, 24000)
+                        self._queue_status(f"Usando voz de referência: {ref_path.name}", step=True)
+                    except Exception as e:
+                        self._queue_status(f"Aviso: Não foi possível usar áudio de referência ({e})", step=True)
+            
+            # Cria pipeline com modelo
+            pipeline = KPipeline(lang_code=lang_code, model=model)
+            
+            # Gera áudio com Kokoro
+            generator = pipeline(text, voice=voice_name)
+            
+            # Salva o áudio gerado
+            with wave.open(str(output_path), "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(24000)
+                
+                for chunk in generator:
+                    # Converte float32 para int16
+                    audio_data = (chunk.numpy() * 32767).astype(np.int16)
+                    wf.writeframes(audio_data.tobytes())
+            
+            self._queue_status(f"Áudio gerado: {text[:50]}...", step=True)
+            
+        except MemoryError:
+            raise RuntimeError("Memória insuficiente para gerar áudio. Tente fechar outros programas.")
+            raise RuntimeError(f"Erro ao gerar áudio com Kokoro: {e}")
 
-                menu_capture = self._capture_qwen_window()
-                try:
-                    read_local_point = self._find_read_aloud_point(capture.image, menu_capture.image, screen_menu_point, menu_capture)
-                    read_screen_point = self._to_screen(menu_capture, read_local_point)
-                    self._queue_status(f"'Leia em voz alta' encontrado automaticamente em ({read_screen_point.x}, {read_screen_point.y})...", step=True)
-                except RuntimeError:
-                    if local_menu_point != fallback_candidate:
-                        continue
-                    menu_array = self._image_array(menu_capture.image)
-                    menu_height, menu_width, _ = menu_array.shape
-                    read_screen_point = ScreenPoint(
-                        menu_capture.offset_x + int(menu_width * read_x_ratio),
-                        menu_capture.offset_y + int(menu_height * read_y_ratio),
-                    )
-                    self._queue_status(f"Usando coordenadas fixas para 'Leia em voz alta' ({read_screen_point.x}, {read_screen_point.y})...", step=True)
-
-                final_x, final_y = self._safe_screen_point(read_screen_point)
-                self._queue_status(f"Clicando em 'Leia em voz alta' ({final_x}, {final_y})...", step=True)
-                pyautogui.click(final_x, final_y)
-                time.sleep(0.5)
-                return
-        finally:
-            pyautogui.FAILSAFE = old_failsafe
-
-        raise RuntimeError("Não consegui abrir o menu de leitura em voz alta nos 3 pontinhos da resposta do Qwen.")
-
-    def _play_read_aloud_and_record(
-        self,
-        response_capture: WindowCapture,
-        menu_point: ScreenPoint,
-        output_path: Path,
-        record_duration: float,
-    ) -> float:
-        read_point: ScreenPoint | None = None
-        menu_capture: WindowCapture | None = None
-        attempts = [menu_point]
-        local_candidates = self._rank_response_more_candidates(response_capture.image, self._response_more_candidates(response_capture.image))
-        for local_candidate in local_candidates:
-            screen_candidate = self._to_screen(response_capture, local_candidate)
-            if not any(abs(screen_candidate.x - point.x) <= 8 and abs(screen_candidate.y - point.y) <= 8 for point in attempts):
-                attempts.append(screen_candidate)
-
-        for attempt in attempts[:8]:
-            pyautogui.press("esc")
-            time.sleep(0.08)
-            pyautogui.click(attempt.x, attempt.y)
-            time.sleep(self._safe_float(self.qwen_menu_wait.get(), 1.0, 0.2, 10.0))
-            candidate_capture = self._capture_qwen_window()
-            if not self._menu_component_near_click(response_capture.image, candidate_capture.image, attempt, candidate_capture):
-                continue
-            try:
-                read_point = self._to_screen(candidate_capture, self._find_read_aloud_point(response_capture.image, candidate_capture.image, attempt, candidate_capture))
-                menu_capture = candidate_capture
-                break
-            except RuntimeError:
-                continue
-
-        if read_point is None or menu_capture is None:
-            raise RuntimeError("Abri os 3 pontinhos, mas não consegui confirmar o menu de leitura em voz alta. Tente aumentar as esperas da aba Audio.")
-
-        def start_read_aloud() -> None:
-            pyautogui.click(read_point.x, read_point.y)
-            time.sleep(0.05)
-
-        return self._record_system_audio(output_path, record_duration, on_ready=start_read_aloud)
-
-    @staticmethod
-    def _qwen_repeat_prompt(text: str) -> str:
-        quoted_text = " ".join(text.replace('"', "'").split())
-        return f'Responda somente com esta frase entre aspas, sem adicionar nada antes ou depois: "{quoted_text}"'
-
-    def _capture_qwen_window(self) -> WindowCapture:
-        window = None
-        try:
-            if hasattr(pyautogui, "getActiveWindow"):
-                window = pyautogui.getActiveWindow()
-        except Exception:
-            window = None
-
-        if window and getattr(window, "width", 0) > 200 and getattr(window, "height", 0) > 200:
-            left = max(int(window.left), 0)
-            top = max(int(window.top), 0)
-            width = int(window.width)
-            height = int(window.height)
-            return WindowCapture(pyautogui.screenshot(region=(left, top, width, height)), left, top)
-
-        return WindowCapture(pyautogui.screenshot(), 0, 0)
-
-    @staticmethod
-    def _to_screen(capture: WindowCapture, point: ScreenPoint) -> ScreenPoint:
-        return ScreenPoint(capture.offset_x + point.x, capture.offset_y + point.y)
-
-    @staticmethod
-    def _safe_screen_point(point: ScreenPoint, margin: int = 50) -> tuple[int, int]:
-        screen_width, screen_height = pyautogui.size()
-        return (
-            min(max(point.x, margin), screen_width - margin),
-            min(max(point.y, margin), screen_height - margin),
-        )
-
-    @staticmethod
-    def _image_array(image: Any) -> np.ndarray:
-        if hasattr(image, "convert"):
-            image = image.convert("RGB")
-        array = np.asarray(image)
-        if array.ndim == 2:
-            array = np.repeat(array[:, :, None], 3, axis=2)
-        if array.shape[2] > 3:
-            array = array[:, :, :3]
-        return array.astype(np.int16)
-
-    def _find_qwen_composer(self, image: Any) -> ScreenBounds:
-        array = self._image_array(image)
-        height, width, _ = array.shape
-        channels_spread = array.max(axis=2) - array.min(axis=2)
-        gray_mask = (
-            (array[:, :, 0] >= 16)
-            & (array[:, :, 0] <= 82)
-            & (array[:, :, 1] >= 16)
-            & (array[:, :, 1] <= 82)
-            & (array[:, :, 2] >= 16)
-            & (array[:, :, 2] <= 82)
-            & (channels_spread <= 18)
-        )
-        gray_mask[: int(height * 0.45), :] = False
-
-        row_counts = gray_mask.sum(axis=1)
-        row_threshold = max(80, int(width * 0.25))
-        segments: list[tuple[int, int]] = []
-        segment_start: int | None = None
-        for row, count in enumerate(row_counts):
-            if count >= row_threshold and segment_start is None:
-                segment_start = row
-            elif count < row_threshold and segment_start is not None:
-                if row - segment_start >= 35:
-                    segments.append((segment_start, row))
-                segment_start = None
-        if segment_start is not None and height - segment_start >= 35:
-            segments.append((segment_start, height))
-        if not segments:
-            return self._fallback_qwen_composer(width, height)
-
-        top, bottom = max(segments, key=lambda item: item[1])
-        band = gray_mask[top:bottom, :]
-        col_counts = band.sum(axis=0)
-        col_threshold = max(20, int((bottom - top) * 0.25))
-        cols = np.where(col_counts >= col_threshold)[0]
-        if cols.size == 0:
-            return self._fallback_qwen_composer(width, height)
-        left = max(int(cols[0]), int(width * 0.02))
-        right = min(int(cols[-1]) + 1, int(width * 0.98))
-        if bottom - top < 35 or right - left < max(120, int(width * 0.25)):
-            return self._fallback_qwen_composer(width, height)
-        return ScreenBounds(left, int(top), right, int(bottom))
-
-    @staticmethod
-    def _fallback_qwen_composer(width: int, height: int) -> ScreenBounds:
-        return ScreenBounds(
-            max(12, int(width * 0.035)),
-            max(0, height - max(120, int(height * 0.16))),
-            min(width - 12, int(width * 0.965)),
-            max(1, height - max(24, int(height * 0.04))),
-        )
-
-    @staticmethod
-    def _composer_input_point(composer: ScreenBounds) -> ScreenPoint:
-        return ScreenPoint(composer.left + min(max(composer.width // 4, 80), 180), composer.top + composer.height // 2)
-
-    def _find_qwen_send_button(self, image: Any, composer: ScreenBounds) -> ScreenPoint:
-        array = self._image_array(image)
-        search_left = composer.left + int(composer.width * 0.68)
-        search = array[composer.top : composer.bottom, search_left : composer.right]
-        white_mask = (search[:, :, 0] >= 225) & (search[:, :, 1] >= 225) & (search[:, :, 2] >= 225)
-        ys, xs = np.where(white_mask)
-        if ys.size:
-            components = self._components(white_mask, min_area=60)
-            if components:
-                best = max(components, key=lambda bounds: bounds.width * bounds.height)
-                return ScreenPoint(search_left + best.center.x, composer.top + best.center.y)
-            return ScreenPoint(search_left + int(np.median(xs)), composer.top + int(np.median(ys)))
-        return ScreenPoint(composer.right - 36, composer.top + composer.height // 2)
-
-    def _wait_for_response_more_button(self, before_capture: WindowCapture, timeout: float) -> tuple[WindowCapture, ScreenPoint]:
-        before_candidates = self._response_more_candidates(before_capture.image)
-        time.sleep(max(timeout, 1.0))
-
-        capture = self._capture_qwen_window()
-        after_candidates = self._response_more_candidates(capture.image)
-        best_candidate = self._best_response_more_candidate(before_capture.image, before_candidates, capture.image, after_candidates)
-        if best_candidate is not None:
-            return capture, best_candidate
-
-        revealed = self._capture_qwen_with_revealed_actions(capture)
-        for reveal_capture in revealed:
-            reveal_candidates = self._response_more_candidates(reveal_capture.image)
-            best_candidate = self._best_response_more_candidate(before_capture.image, before_candidates, reveal_capture.image, reveal_candidates)
-            if best_candidate is not None:
-                return reveal_capture, best_candidate
-            if reveal_candidates:
-                capture = reveal_capture
-                after_candidates = reveal_candidates
-
-        settle_deadline = time.monotonic() + 4.5
-        while time.monotonic() < settle_deadline:
-            time.sleep(0.35)
-            capture = self._capture_qwen_window()
-            after_candidates = self._response_more_candidates(capture.image)
-            best_candidate = self._best_response_more_candidate(before_capture.image, before_candidates, capture.image, after_candidates)
-            if best_candidate is not None:
-                return capture, best_candidate
-            for reveal_capture in self._capture_qwen_with_revealed_actions(capture):
-                reveal_candidates = self._response_more_candidates(reveal_capture.image)
-                best_candidate = self._best_response_more_candidate(before_capture.image, before_candidates, reveal_capture.image, reveal_candidates)
-                if best_candidate is not None:
-                    return reveal_capture, best_candidate
-                if reveal_candidates:
-                    capture = reveal_capture
-                    after_candidates = reveal_candidates
-
-        if after_candidates:
-            return capture, self._select_response_more_candidate(capture.image, after_candidates)
-
-        raise RuntimeError(
-            "Não consegui localizar os 3 pontinhos da resposta do Qwen depois da espera configurada. "
-            "Aumente o tempo de espera da resposta na aba Audio se o Qwen ainda estiver escrevendo."
-        )
-
-    def _wait_for_qwen_thought_completed(self, before_capture: WindowCapture, timeout: float) -> tuple[WindowCapture, ScreenPoint]:
-        # O Qwen mostra “Pensamento concluído” antes da resposta final e, em seguida,
-        # exibe a fileira de ações da resposta. Sem OCR, a confirmação robusta no app
-        # é aguardar a nova fileira de ações/3 pontinhos aparecer e ser ranqueada.
-        return self._wait_for_response_more_button(before_capture, timeout)
-
-    def _best_response_more_candidate(
-        self,
-        before_image: Any,
-        before_candidates: list[ScreenPoint],
-        after_image: Any,
-        after_candidates: list[ScreenPoint],
-    ) -> ScreenPoint | None:
-        return (
-            self._best_new_more_candidate(before_candidates, after_candidates)
-            or self._best_changed_more_candidate(before_image, after_image, after_candidates)
-        )
-
-    def _capture_qwen_with_revealed_actions(self, capture: WindowCapture) -> list[WindowCapture]:
-        array = self._image_array(capture.image)
-        height, width, _ = array.shape
-        try:
-            composer = self._find_qwen_composer(capture.image)
-            bottom_limit = max(composer.top - 18, int(height * 0.50))
-        except RuntimeError:
-            bottom_limit = int(height * 0.82)
-        y_positions = [
-            max(int(height * 0.42), bottom_limit - 30),
-            max(int(height * 0.38), bottom_limit - 70),
-            max(int(height * 0.34), bottom_limit - 115),
-            max(int(height * 0.28), bottom_limit - 170),
-            max(int(height * 0.22), bottom_limit - 235),
-        ]
-        x_positions = [int(width * fraction) for fraction in (0.46, 0.54, 0.62, 0.70, 0.78, 0.86)]
-        captures: list[WindowCapture] = []
-        for y in y_positions:
-            for x in x_positions:
-                pyautogui.moveTo(capture.offset_x + x, capture.offset_y + y, duration=0.05)
-                time.sleep(0.12)
-                captures.append(self._capture_qwen_window())
-        return captures
-
-    def _find_response_more_button(self, image: Any) -> ScreenPoint:
-        candidates = self._response_more_candidates(image)
-        if not candidates:
-            raise RuntimeError("Não consegui localizar os 3 pontinhos da resposta do Qwen na captura da janela.")
-        return self._select_response_more_candidate(image, candidates)
-
-    def _response_more_candidates(self, image: Any) -> list[ScreenPoint]:
-        array = self._image_array(image)
-        height, _, _ = array.shape
-        channels_spread = array.max(axis=2) - array.min(axis=2)
-        channel_mean = array.mean(axis=2)
-        dot_masks = [
-            (channel_mean >= 135) & (channels_spread <= 85),
-            (channel_mean <= 115) & (channels_spread <= 85),
-        ]
-        for dot_mask in dot_masks:
-            dot_mask[: int(height * 0.14), :] = False
-        try:
-            composer = self._find_qwen_composer(image)
-            if composer.top > int(height * 0.60):
-                for dot_mask in dot_masks:
-                    dot_mask[max(composer.top - 4, 0) :, :] = False
-            else:
-                for dot_mask in dot_masks:
-                    dot_mask[int(height * 0.82) :, :] = False
-        except RuntimeError:
-            for dot_mask in dot_masks:
-                dot_mask[int(height * 0.82) :, :] = False
-
-        tiny = [
-            component
-            for dot_mask in dot_masks
-            for component in self._components(dot_mask, min_area=1)
-            if 1 <= component.width <= 14
-            and 1 <= component.height <= 14
-            and component.width * component.height <= 130
-        ]
-        centers = [component.center for component in tiny]
-        candidates: list[ScreenPoint] = []
-
-        def add_candidate(candidate: ScreenPoint) -> None:
-            if not any(abs(candidate.x - existing.x) <= 5 and abs(candidate.y - existing.y) <= 5 for existing in candidates):
-                candidates.append(candidate)
-
-        icon_components: list[ScreenBounds] = []
-        for dot_mask in dot_masks:
-            for component in self._components(dot_mask, min_area=1):
-                if self._looks_like_more_icon_component(component):
-                    icon_components.append(component)
-                    add_candidate(component.center)
-
-        for candidate in self._action_row_more_candidates(icon_components):
-            add_candidate(candidate)
-
-        for first in centers:
-            horizontal_neighbors = [point for point in centers if abs(point.y - first.y) <= 6 and 3 <= point.x - first.x <= 34]
-            for second in horizontal_neighbors:
-                third_options = [point for point in centers if abs(point.y - first.y) <= 6 and 3 <= point.x - second.x <= 34]
-                for third in third_options:
-                    span = third.x - first.x
-                    first_gap = second.x - first.x
-                    second_gap = third.x - second.x
-                    if 8 <= span <= 52 and max(first_gap, second_gap) <= min(first_gap, second_gap) * 2.6:
-                        add_candidate(ScreenPoint((first.x + third.x) // 2, int(round((first.y + second.y + third.y) / 3))))
-
-            vertical_neighbors = [point for point in centers if abs(point.x - first.x) <= 6 and 3 <= point.y - first.y <= 34]
-            for second in vertical_neighbors:
-                third_options = [point for point in centers if abs(point.x - first.x) <= 6 and 3 <= point.y - second.y <= 34]
-                for third in third_options:
-                    span = third.y - first.y
-                    first_gap = second.y - first.y
-                    second_gap = third.y - second.y
-                    if 8 <= span <= 52 and max(first_gap, second_gap) <= min(first_gap, second_gap) * 2.6:
-                        add_candidate(ScreenPoint(int(round((first.x + second.x + third.x) / 3)), (first.y + third.y) // 2))
-        return candidates
-
-    @staticmethod
-    def _looks_like_more_icon_component(component: ScreenBounds) -> bool:
-        area = max(component.width * component.height, 1)
-        if area > 900:
-            return False
-        horizontal_icon = 10 <= component.width <= 46 and 2 <= component.height <= 20
-        vertical_icon = 2 <= component.width <= 20 and 10 <= component.height <= 46
-        compact_icon = 6 <= component.width <= 32 and 6 <= component.height <= 32
-        return horizontal_icon or vertical_icon or compact_icon
-
-    @staticmethod
-    def _action_row_more_candidates(components: list[ScreenBounds]) -> list[ScreenPoint]:
-        # Na UI atual do Qwen a resposta mostra uma fileira de ações
-        # (copiar, compartilhar, regenerar e reticências). Quando as reticências
-        # são desenhadas como SVG/anti-aliasing, detectar os três pontos isolados
-        # pode falhar; nesse caso o botão de menu é o último ícone dessa fileira.
-        row_icons = [
-            component
-            for component in components
-            if 2 <= component.width <= 46 and 2 <= component.height <= 46
-        ]
-        candidates: list[ScreenPoint] = []
-        for component in row_icons:
-            same_row = [
-                other
-                for other in row_icons
-                if abs(other.center.y - component.center.y) <= 14
-                and 0 <= other.center.x - component.center.x <= 180
-            ]
-            if len(same_row) >= 3:
-                rightmost = max(same_row, key=lambda item: (item.center.x, item.center.y))
-                candidates.append(rightmost.center)
-        unique: list[ScreenPoint] = []
-        for candidate in candidates:
-            if not any(abs(candidate.x - existing.x) <= 5 and abs(candidate.y - existing.y) <= 5 for existing in unique):
-                unique.append(candidate)
-        return unique
-
-    def _select_response_more_candidate(self, image: Any, candidates: list[ScreenPoint]) -> ScreenPoint:
-        ranked = self._rank_response_more_candidates(image, candidates)
-        return ranked[0]
-
-    def _rank_response_more_candidates(self, image: Any, candidates: list[ScreenPoint]) -> list[ScreenPoint]:
-        if not candidates:
-            return []
-        array = self._image_array(image)
-        height, width, _ = array.shape
-        try:
-            composer = self._find_qwen_composer(image)
-            preferred_bottom = composer.top - 10
-        except RuntimeError:
-            preferred_bottom = int(height * 0.82)
-
-        def score(point: ScreenPoint) -> tuple[int, int, int]:
-            # Pontua mais alto o botão da última resposta: próximo ao composer, na metade inferior e longe das bordas.
-            y_score = -abs(preferred_bottom - point.y)
-            lower_half_bonus = 120 if point.y >= int(height * 0.42) else 0
-            edge_penalty = -80 if point.x < int(width * 0.18) or point.x > int(width * 0.94) else 0
-            row = [candidate for candidate in candidates if abs(candidate.y - point.y) <= 8 and candidate.x <= int(width * 0.55)]
-            action_row_bonus = 0
-            if point.x <= int(width * 0.55) and 3 <= len(row) <= 8 and point.x >= max(candidate.x for candidate in row) - 8:
-                # Na fileira de ações, o menu de 3 pontinhos é o último ícone à direita.
-                # Limitar o tamanho da fileira evita confundir linhas de texto com botões.
-                action_row_bonus = 180
-            return (action_row_bonus + lower_half_bonus + edge_penalty + y_score, point.y, point.x)
-
-        return sorted(candidates, key=score, reverse=True)
-
-    @staticmethod
-    def _best_new_more_candidate(before_candidates: list[ScreenPoint], after_candidates: list[ScreenPoint]) -> ScreenPoint | None:
-        new_candidates = [
-            candidate
-            for candidate in after_candidates
-            if not any(abs(candidate.x - before.x) <= 10 and abs(candidate.y - before.y) <= 10 for before in before_candidates)
-        ]
-        if not new_candidates:
-            if before_candidates:
-                before_bottom = max(point.y for point in before_candidates)
-                lower_candidates = [candidate for candidate in after_candidates if candidate.y > before_bottom + 12]
-                if lower_candidates:
-                    return max(lower_candidates, key=lambda point: (point.y, point.x))
-            return None
-        return max(new_candidates, key=lambda point: (point.y, point.x))
-
-    def _best_changed_more_candidate(self, before_image: Any, after_image: Any, candidates: list[ScreenPoint]) -> ScreenPoint | None:
-        before = self._image_array(before_image)
-        after = self._image_array(after_image)
-        min_height = min(before.shape[0], after.shape[0])
-        min_width = min(before.shape[1], after.shape[1])
-        diff = np.abs(after[:min_height, :min_width] - before[:min_height, :min_width]).max(axis=2)
-        scored_candidates: list[tuple[int, ScreenPoint]] = []
-        for point in candidates:
-            left = max(point.x - 60, 0)
-            right = min(point.x + 60, min_width)
-            top = max(point.y - 50, 0)
-            bottom = min(point.y + 35, min_height)
-            if right <= left or bottom <= top:
-                continue
-            score = int((diff[top:bottom, left:right] > 28).sum())
-            if score >= 80:
-                scored_candidates.append((score, point))
-        if not scored_candidates:
-            return None
-        return max(scored_candidates, key=lambda item: (item[0], item[1].y))[1]
-
-    def _find_read_aloud_point(self, before_image: Any, after_image: Any, clicked_menu_point: ScreenPoint, after_capture: WindowCapture) -> ScreenPoint:
-        component = self._menu_component_near_click(before_image, after_image, clicked_menu_point, after_capture)
-        if not component:
-            raise RuntimeError("O menu dos 3 pontinhos não apareceu perto do clique.")
-        read_x = component.left + min(max(int(component.width * 0.28), 70), component.width - 12)
-        read_y = component.top + min(max(component.height // 5, 34), 56)
-        return ScreenPoint(read_x, read_y)
-
-    def _menu_component_near_click(self, before_image: Any, after_image: Any, clicked_menu_point: ScreenPoint, after_capture: WindowCapture) -> ScreenBounds | None:
-        before = self._image_array(before_image)
-        after = self._image_array(after_image)
-        min_height = min(before.shape[0], after.shape[0])
-        min_width = min(before.shape[1], after.shape[1])
-        diff = np.abs(after[:min_height, :min_width] - before[:min_height, :min_width]).max(axis=2)
-        changed_mask = diff > 25
-        components = [component for component in self._components(changed_mask, min_area=120) if component.width > 30 and component.height > 12]
-        local_click = ScreenPoint(clicked_menu_point.x - after_capture.offset_x, clicked_menu_point.y - after_capture.offset_y)
-        nearby = [
-            component
-            for component in components
-            if abs(component.center.x - local_click.x) <= 340 and abs(component.center.y - local_click.y) <= 340
-        ]
-        if not nearby:
-            return None
-        # O menu é normalmente o maior retângulo novo perto dos 3 pontinhos clicados.
-        return max(nearby, key=lambda bounds: bounds.width * bounds.height)
-
-    @staticmethod
-    def _components(mask: np.ndarray, min_area: int = 1) -> list[ScreenBounds]:
-        height, width = mask.shape
-        visited = np.zeros(mask.shape, dtype=bool)
-        components: list[ScreenBounds] = []
-        for y in range(height):
-            xs = np.where(mask[y] & ~visited[y])[0]
-            for x_start in xs:
-                if visited[y, x_start] or not mask[y, x_start]:
-                    continue
-                stack = [(int(x_start), y)]
-                visited[y, x_start] = True
-                min_x = max_x = int(x_start)
-                min_y = max_y = y
-                area = 0
-                while stack:
-                    x, current_y = stack.pop()
-                    area += 1
-                    min_x = min(min_x, x)
-                    max_x = max(max_x, x)
-                    min_y = min(min_y, current_y)
-                    max_y = max(max_y, current_y)
-                    for nx in (x - 1, x, x + 1):
-                        for ny in (current_y - 1, current_y, current_y + 1):
-                            if nx == x and ny == current_y:
-                                continue
-                            if 0 <= nx < width and 0 <= ny < height and not visited[ny, nx] and mask[ny, nx]:
-                                visited[ny, nx] = True
-                                stack.append((nx, ny))
-                if area >= min_area:
-                    components.append(ScreenBounds(min_x, min_y, max_x + 1, max_y + 1))
-        return components
-
-    def _default_loopback_microphone(self) -> Any:
-        speaker = sc.default_speaker()
-        speaker_name = str(getattr(speaker, "name", speaker))
-        try:
-            microphone = sc.get_microphone(id=speaker_name, include_loopback=True)
-            if microphone is not None:
-                return microphone
-        except Exception:
-            pass
-
-        microphones = list(sc.all_microphones(include_loopback=True))
-        speaker_words = {word for word in re.split(r"\W+", speaker_name.lower()) if len(word) >= 3}
-        loopback_microphones = [microphone for microphone in microphones if "loopback" in str(getattr(microphone, "name", microphone)).lower()]
-        for microphone in loopback_microphones or microphones:
-            microphone_name = str(getattr(microphone, "name", microphone)).lower()
-            if speaker_words and any(word in microphone_name for word in speaker_words):
-                return microphone
-        if loopback_microphones:
-            return loopback_microphones[0]
-        if microphones:
-            return microphones[0]
-        raise RuntimeError("Não encontrei um dispositivo de gravação loopback para capturar o áudio do sistema.")
-
-    @contextmanager
-    def _continuous_loopback_recorder(self):
-        sample_rate = 48000
-        chunk_seconds = 0.25
-        chunk_frames = int(sample_rate * chunk_seconds)
-        if getattr(self, "_loopback_thread_running", False):
-            yield
-            return
-
-        microphone = self._default_loopback_microphone()
-        stop_event = threading.Event()
-        lock = threading.Lock()
-        self._loopback_chunks: list[np.ndarray] = []
-        self._loopback_collecting = False
-        self._loopback_lock = lock
-        self._loopback_sample_rate = sample_rate
-        self._loopback_chunk_seconds = chunk_seconds
-        self._loopback_thread_running = True
-
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="data discontinuity in recording.*")
-            with microphone.recorder(samplerate=sample_rate) as recorder:
-                def drain_loop() -> None:
-                    while not stop_event.is_set():
-                        try:
-                            chunk = recorder.record(numframes=chunk_frames)
-                        except Exception:
-                            if not stop_event.is_set():
-                                time.sleep(chunk_seconds)
-                            continue
-                        with lock:
-                            if self._loopback_collecting:
-                                self._loopback_chunks.append(chunk)
-
-                thread = threading.Thread(target=drain_loop, daemon=True)
-                thread.start()
-                try:
-                    yield
-                finally:
-                    stop_event.set()
-                    thread.join(timeout=2.0)
-                    self._loopback_thread_running = False
-                    self._loopback_collecting = False
-                    self._loopback_chunks = []
-
-    def _record_system_audio(self, output_path: Path, duration: float, on_ready: Callable[[], None] | None = None) -> float:
-        sample_rate = 48000
         chunk_seconds = 0.25
         silence_limit = 1.25
         silence_threshold = 0.003
