@@ -14,6 +14,7 @@ import urllib.parse
 import warnings
 import wave
 import requests
+import torch
 from io import BytesIO
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ import numpy as np
 from PIL import Image, ImageGrab, ImageTk
 import soundcard as sc
 import soundfile as sf
+import sounddevice as sd
 
 KOKORO_AVAILABLE = False
 try:
@@ -755,7 +757,8 @@ class VideoGeneratorApp:
         for widget in self.audio_list_frame.winfo_children():
             widget.destroy()
         
-        self._refresh_lines()
+        # Não chama _refresh_lines() para não sobrescrever o roteiro atual
+        # Apenas usa as linhas já existentes
         
         if not self.lines:
             Label(self.audio_list_frame, text="Nenhuma frase no roteiro. Vá para a aba Roteiro e gere ou digite um roteiro.", bg="#ffffff", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
@@ -772,8 +775,8 @@ class VideoGeneratorApp:
             text_label = Label(frame, text=line.text[:80] + ("..." if len(line.text) > 80 else ""), bg="#f9fafb", fg="#111827", font=("Segoe UI", 9), wraplength=500, justify=LEFT)
             text_label.pack(side=LEFT, fill=X, expand=True, padx=(6, 10))
             
-            # Botão Escutar
-            audio_path = Path.home() / ".videogenerator_media" / f"audio_{index:03d}.wav"
+            # Botão Escutar - usa caminho correto
+            audio_path = CLIPBOARD_MEDIA_DIR / f"audio_{index:03d}.wav"
             if audio_path.exists():
                 Button(frame, text="Escutar áudio", command=lambda p=audio_path: self._play_audio(p), bg="#e0f2fe", fg="#0369a1", relief="flat", padx=10, pady=4, font=("Segoe UI", 9)).pack(side=RIGHT)
             else:
@@ -1042,6 +1045,7 @@ class VideoGeneratorApp:
                 self.logo_path.set(data.get("logo_path", self.logo_path.get()))
                 self.logo_position.set(data.get("logo_position", self.logo_position.get()) or self.logo_position.get())
                 self.logo_size.set(data.get("logo_size", self.logo_size.get()))
+                self.tts_voice_ref_path.set(data.get("tts_voice_ref_path", self.tts_voice_ref_path.get()))
             except json.JSONDecodeError:
                 pass
 
@@ -1084,6 +1088,7 @@ class VideoGeneratorApp:
             "logo_path": self.logo_path.get().strip(),
             "logo_position": self.logo_position.get().strip(),
             "logo_size": self.logo_size.get().strip(),
+            "tts_voice_ref_path": self.tts_voice_ref_path.get().strip(),
         }
         CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
         if show_status:

@@ -7,6 +7,7 @@ requests>=2.32.0
 soundcard>=0.4.3
 kokoro>=0.7.0
 soundfile>=0.12.1
+sounddevice>=0.2.0
 scipy>=1.11.0
 torch>=2.0.0
 torchaudio>=2.0.0
