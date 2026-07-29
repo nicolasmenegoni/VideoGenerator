@@ -956,10 +956,15 @@ class VideoGeneratorApp:
                         
                         for chunk in generator:
                             # Converte float32 para int16
-                            if hasattr(chunk, 'numpy'):
-                                audio_data = (chunk.numpy() * 32767).astype(np.int16)
+                            # Na nova versao do Kokoro, chunk é um objeto Result com propriedade audio
+                            if hasattr(chunk, 'audio') and chunk.audio is not None:
+                                audio_tensor = chunk.audio
+                            elif hasattr(chunk, 'numpy'):
+                                audio_tensor = chunk
                             else:
-                                audio_data = (torch.from_numpy(chunk) * 32767).to(torch.int16).numpy()
+                                audio_tensor = torch.from_numpy(chunk)
+                            
+                            audio_data = (audio_tensor * 32767).to(torch.int16).numpy()
                             wf.writeframes(audio_data.tobytes())
                     
                     self.message_queue.put(("progress", str(index)))
@@ -1687,10 +1692,15 @@ class VideoGeneratorApp:
                 
                 for chunk in generator:
                     # Converte float32 para int16
-                    if hasattr(chunk, 'numpy'):
-                        audio_data = (chunk.numpy() * 32767).astype(np.int16)
+                    # Na nova versao do Kokoro, chunk é um objeto Result com propriedade audio
+                    if hasattr(chunk, 'audio') and chunk.audio is not None:
+                        audio_tensor = chunk.audio
+                    elif hasattr(chunk, 'numpy'):
+                        audio_tensor = chunk
                     else:
-                        audio_data = (torch.from_numpy(chunk) * 32767).to(torch.int16).numpy()
+                        audio_tensor = torch.from_numpy(chunk)
+                    
+                    audio_data = (audio_tensor * 32767).to(torch.int16).numpy()
                     wf.writeframes(audio_data.tobytes())
             
             self._queue_status(f"Áudio gerado: {text[:50]}...", step=True)
