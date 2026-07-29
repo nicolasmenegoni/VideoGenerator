@@ -13,6 +13,7 @@ import threading
 import urllib.parse
 import warnings
 import wave
+import requests
 from io import BytesIO
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ import imageio_ffmpeg
 import numpy as np
 from PIL import Image, ImageGrab, ImageTk
 import soundcard as sc
+import soundfile as sf
 
 KOKORO_AVAILABLE = False
 try:
@@ -778,10 +780,15 @@ class VideoGeneratorApp:
                 Label(frame, text="Áudio não gerado", bg="#f9fafb", fg="#9ca3af", font=("Segoe UI", 8)).pack(side=RIGHT, padx=(10, 0))
 
     def _play_audio(self, audio_path: Path) -> None:
-        """Toca um arquivo de áudio."""
+        """Toca um arquivo de áudio usando sounddevice."""
         try:
-            import playsound
-            playsound.playsound(str(audio_path))
+            import sounddevice as sd
+            # Lê o arquivo de áudio
+            data, samplerate = sf.read(str(audio_path))
+            # Toca o áudio
+            sd.play(data, samplerate)
+            # Aguarda até terminar
+            sd.wait()
         except ImportError:
             # Fallback usando subprocess
             try:
@@ -946,7 +953,10 @@ class VideoGeneratorApp:
                         
                         for chunk in generator:
                             # Converte float32 para int16
-                            audio_data = (chunk.numpy() * 32767).astype(np.int16)
+                            if hasattr(chunk, 'numpy'):
+                                audio_data = (chunk.numpy() * 32767).astype(np.int16)
+                            else:
+                                audio_data = (torch.from_numpy(chunk) * 32767).to(torch.int16).numpy()
                             wf.writeframes(audio_data.tobytes())
                     
                     self.message_queue.put(("progress", str(index)))
@@ -1556,7 +1566,6 @@ class VideoGeneratorApp:
             return
         out_dir = Path(self.output_dir.get()).expanduser()
         out_dir.mkdir(parents=True, exist_ok=True)
-        self.qwen_window_ready = False
         self._save_config()
         self.progress.configure(value=0, maximum=max(len(self.lines) * 3 + 1, 1))
         self.progress_text.set("Gerando...")
@@ -1673,13 +1682,17 @@ class VideoGeneratorApp:
                 
                 for chunk in generator:
                     # Converte float32 para int16
-                    audio_data = (chunk.numpy() * 32767).astype(np.int16)
+                    if hasattr(chunk, 'numpy'):
+                        audio_data = (chunk.numpy() * 32767).astype(np.int16)
+                    else:
+                        audio_data = (torch.from_numpy(chunk) * 32767).to(torch.int16).numpy()
                     wf.writeframes(audio_data.tobytes())
             
             self._queue_status(f"Áudio gerado: {text[:50]}...", step=True)
             
         except MemoryError:
             raise RuntimeError("Memória insuficiente para gerar áudio. Tente fechar outros programas.")
+        except Exception as e:
             raise RuntimeError(f"Erro ao gerar áudio com Kokoro: {e}")
 
         chunk_seconds = 0.25
