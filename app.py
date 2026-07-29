@@ -13,7 +13,8 @@ import threading
 import urllib.parse
 import warnings
 import wave
-import webbrowser
+import requests
+import torch
 from io import BytesIO
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -25,13 +26,17 @@ from tkinter import font as tkfont
 import imageio_ffmpeg
 import numpy as np
 from PIL import Image, ImageGrab, ImageTk
-import pyautogui
-import pyperclip
-import requests
 import soundcard as sc
+import soundfile as sf
+import sounddevice as sd
 
 KOKORO_AVAILABLE = False
-KModel = None
+try:
+    from kokoro import KModel, KPipeline
+    KOKORO_AVAILABLE = True
+except ImportError:
+    KModel = None
+    KPipeline = None
 
 APP_TITLE = "VideoGenerator"
 CONFIG_FILE = Path.home() / ".videogenerator_config.json"
@@ -111,30 +116,39 @@ class VideoGeneratorApp:
         self.subtitle_outline_color = StringVar(value="#000000")
         self.subtitle_font = StringVar(value="Arial Black")
         self.subtitle_preview_text = StringVar(value="Hoje vamos falar sobre a China.")
-        self.chatgpt_shortcut = StringVar(value="alt+c")
-        self.chatgpt_response_wait = StringVar(value="8")
-        self.chatgpt_send_wait = StringVar(value="1")
-        self.chatgpt_menu_wait = StringVar(value="1")
-        self.chatgpt_menu_x = StringVar(value="0")
-        self.chatgpt_menu_y = StringVar(value="0")
-        self.chatgpt_input_x = StringVar(value="0")
-        self.chatgpt_input_y = StringVar(value="0")
-        self.chatgpt_send_x = StringVar(value="0")
-        self.chatgpt_send_y = StringVar(value="0")
-        self.chatgpt_read_x = StringVar(value="0")
-        self.chatgpt_read_y = StringVar(value="0")
-        self.chatgpt_record_extra = StringVar(value="2")
+        self.qwen_shortcut = StringVar(value="alt+c")
+        self.qwen_response_wait = StringVar(value="8")
+        self.qwen_send_wait = StringVar(value="1")
+        self.qwen_menu_wait = StringVar(value="1")
+        self.qwen_menu_x = StringVar(value="0")
+        self.qwen_menu_y = StringVar(value="0")
+        self.qwen_input_x = StringVar(value="0")
+        self.qwen_input_y = StringVar(value="0")
+        self.qwen_send_x = StringVar(value="0")
+        self.qwen_send_y = StringVar(value="0")
+        self.qwen_read_x = StringVar(value="0")
+        self.qwen_read_y = StringVar(value="0")
+        self.qwen_record_extra = StringVar(value="2")
+        
+        # Novas variáveis para TTS local com Kokoro
+        self.tts_language = StringVar(value="pt-br")
+        self.tts_voice_ref_path = StringVar(value="")
+        self.tts_model_loaded = False
+        self.kokoro_model: KModel | None = None
+        self.kokoro_pipeline: KPipeline | None = None
+        
         self.music_path = StringVar(value="")
         self.music_volume = StringVar(value="20")
         self.status_text = StringVar(value="Pronto.")
         self.progress_text = StringVar(value="")
-        self.chatgpt_window_ready = False
+        self.qwen_window_ready = False
         self.media_preview_images: dict[str, ImageTk.PhotoImage] = {}
         self.media_preview_bytes: dict[str, bytes] = {}
         self.media_preview_loading: set[str] = set()
         self.media_preview_failed: set[str] = set()
         self.logo_preview_image: ImageTk.PhotoImage | None = None
         self.script_text_value = DEFAULT_SCRIPT_TEXT
+        self.script_prompt_value = StringVar(value="")
         self.lines: list[ScriptLine] = []
         self.used_media_urls: set[str] = set()
         self.message_queue: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -254,14 +268,17 @@ class VideoGeneratorApp:
         Label(parent, text="Titulo", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         Entry(parent, textvariable=self.video_title, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 12)).pack(fill=X, ipady=10, pady=(6, 14))
 
-        self.script_text = Text(parent, height=12, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
-        self.script_text.pack(fill=BOTH, expand=True)
-        self.script_text.insert("1.0", self.script_text_value)
+        Label(parent, text="Prompt para o roteiro (opcional)", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        Entry(parent, textvariable=self.script_prompt_value, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 12)).pack(fill=X, ipady=10, pady=(6, 14))
 
         actions = Frame(parent, bg="#ffffff", pady=12)
         actions.pack(fill=X)
         Button(actions, text="Atualizar roteiro", command=self._refresh_lines, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
         Button(actions, text="Gerar roteiro", command=self._start_script_generation, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
+
+        self.script_text = Text(parent, height=12, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
+        self.script_text.pack(fill=BOTH, expand=True)
+        self.script_text.insert("1.0", self.script_text_value)
 
     def _start_script_generation(self) -> None:
         title = self.video_title.get().strip()
@@ -276,11 +293,12 @@ class VideoGeneratorApp:
         self.progress.configure(value=0, maximum=1)
         self.progress_text.set("Gerando roteiro...")
         self.status_text.set("Gerando roteiro com Groq...")
-        threading.Thread(target=self._generate_script_worker, args=(title,), daemon=True).start()
+        prompt = self.script_prompt_value.get().strip()
+        threading.Thread(target=self._generate_script_worker, args=(title, prompt), daemon=True).start()
 
-    def _generate_script_worker(self, title: str) -> None:
+    def _generate_script_worker(self, title: str, prompt: str = "") -> None:
         try:
-            lines = self._groq_script_lines(title)
+            lines = self._groq_script_lines(title, prompt)
             self.root.after(0, lambda: self._apply_generated_script(lines))
             self.message_queue.put(("done", "Roteiro gerado com Groq e salvo no app."))
         except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
@@ -293,8 +311,8 @@ class VideoGeneratorApp:
         self._refresh_lines()
         self.progress.configure(value=1)
 
-    def _groq_script_lines(self, title: str) -> list[str]:
-        prompt = (
+    def _groq_script_lines(self, title: str, prompt: str = "") -> list[str]:
+        base_prompt = (
             "Crie um roteiro curto para um vídeo vertical em português do Brasil com base no título informado. "
             "O roteiro deve ter de 6 a 10 frases curtas, naturais para narração em voz alta, com gancho no começo e fechamento no final. "
             "Cada frase deve funcionar como uma cena separada do vídeo. "
@@ -302,10 +320,12 @@ class VideoGeneratorApp:
             "Responda somente com as frases finais, uma por linha, sem JSON e sem texto extra.\n\n"
             f"Título: {title}"
         )
+        if prompt:
+            base_prompt = f"{prompt}\n\n{base_prompt}"
         content = self._groq_chat_content(
             messages=[
                 {"role": "system", "content": "Você cria roteiros curtos para vídeos verticais em português do Brasil."},
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": base_prompt},
             ],
             temperature=0.7,
             max_tokens=900,
@@ -671,7 +691,7 @@ class VideoGeneratorApp:
         top = Frame(parent, bg="#ffffff")
         top.pack(fill=X)
         ttk.Label(top, text="Audio", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Configure as opções de geração de áudio usando Qwen via navegador.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
+        ttk.Label(top, text="Gere áudios localmente usando IA. Selecione um áudio de referência para clonar sua voz.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
 
         canvas = Canvas(parent, bd=0, highlightthickness=0, bg="#ffffff")
         canvas.pack(side=LEFT, fill=BOTH, expand=True)
@@ -685,19 +705,272 @@ class VideoGeneratorApp:
         canvas.bind("<Configure>", lambda event: canvas.itemconfigure(content_window, width=event.width))
         canvas.bind("<MouseWheel>", lambda event: canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
 
-        instructions = (
-            "O áudio será gerado usando o Qwen no navegador. O app abrirá uma janela do Qwen, enviará a frase, aguardará “Pensamento concluído” e usará o recurso “Leia em voz alta”. "
-            "Certifique-se de que o volume do sistema esteja adequado para gravação."
-        )
-        Label(content, text=instructions, bg="#ffffff", fg="#657084", wraplength=760, justify=LEFT, font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 14))
+        # Card de configurações de TTS
+        tts_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
+        tts_card.pack(fill=X, pady=(0, 12))
+        Label(tts_card, text="Configurações de TTS Local", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
+        
+        # Idioma
+        lang_row = Frame(tts_card, bg="#f8f9fd")
+        lang_row.pack(fill=X, pady=(6, 6))
+        Label(lang_row, text="Idioma:", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold"), width=15, anchor="w").pack(side=LEFT)
+        lang_combo = ttk.Combobox(lang_row, textvariable=self.tts_language, values=["pt-br", "en-us", "en-gb", "es-es", "fr-fr", "de-de", "it-it", "ja-jp", "zh-cn"], state="readonly", width=20, font=("Segoe UI", 9))
+        lang_combo.pack(side=LEFT, ipady=4)
+        Label(lang_row, text="Selecione o idioma para geração dos áudios.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(side=LEFT, padx=(10, 0))
+        
+        # Áudio de referência
+        Label(tts_card, text="Áudio de referência para clonagem de voz", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(12, 6))
+        ref_row = Frame(tts_card, bg="#f8f9fd")
+        ref_row.pack(fill=X, pady=(6, 6))
+        Entry(ref_row, textvariable=self.tts_voice_ref_path, bd=0, bg="#ffffff", fg="#111827", insertbackground="#111827", font=("Segoe UI", 9)).pack(side=LEFT, fill=X, expand=True, ipady=8)
+        Button(ref_row, text="Selecionar áudio", command=self._choose_voice_ref_file, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=8, font=("Segoe UI", 9, "bold")).pack(side=RIGHT, padx=(10, 0))
+        Label(tts_card, text="Selecione um arquivo de áudio (.wav, .mp3) com sua voz para clonagem. Opcional - se não selecionar, usará voz padrão.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(anchor="w", pady=(6, 0))
+        
+        # Status do modelo
+        status_frame = Frame(tts_card, bg="#f8f9fd")
+        status_frame.pack(fill=X, pady=(12, 0))
+        self.tts_status_label = Label(status_frame, text="Modelo Kokoro: Não carregado", bg="#f8f9fd", fg="#dc2626", font=("Segoe UI", 9))
+        self.tts_status_label.pack(anchor="w")
+        if KOKORO_AVAILABLE:
+            self.tts_status_label.configure(text="Modelo Kokoro: Disponível ✓", fg="#059669")
+        else:
+            self.tts_status_label.configure(text="Modelo Kokoro: Não instalado (instale com: pip install kokoro)", fg="#dc2626")
+        
+        # Botão para carregar modelo
+        Button(tts_card, text="Carregar Modelo Kokoro", command=self._load_kokoro_model, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=8, font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(10, 0))
 
-        chatgpt_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
-        chatgpt_card.pack(fill=X, pady=(0, 12))
-        Label(chatgpt_card, text="Configurações do Qwen", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
+        # Lista de frases com botões de escutar
+        Label(content, text="Frases do Roteiro", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(16, 8))
         
-        Label(chatgpt_card, text="✓ O Qwen será aberto automaticamente durante a geração de áudio.", bg="#f8f9fd", fg="#059669", font=("Segoe UI", 9)).pack(anchor="w")
+        self.audio_list_frame = Frame(content, bg="#ffffff")
+        self.audio_list_frame.pack(fill=BOTH, expand=True)
+        self._refresh_audio_list()
         
-        Label(chatgpt_card, text="Dica: Ajuste os tempos de espera se o Qwen estiver lento para responder.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
+        # Botões de ação
+        actions = Frame(content, bg="#ffffff", pady=16)
+        actions.pack(fill=X)
+        Button(actions, text="Gerar todos os áudios", command=self._generate_all_audios, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=18, pady=10, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
+        Label(actions, text="Os áudios serão gerados e salvos automaticamente.", bg="#ffffff", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT, padx=(12, 0))
+
+    def _refresh_audio_list(self) -> None:
+        """Atualiza a lista de frases na aba Audio."""
+        for widget in self.audio_list_frame.winfo_children():
+            widget.destroy()
+        
+        # Não chama _refresh_lines() para não sobrescrever o roteiro atual
+        # Apenas usa as linhas já existentes
+        
+        if not self.lines:
+            Label(self.audio_list_frame, text="Nenhuma frase no roteiro. Vá para a aba Roteiro e gere ou digite um roteiro.", bg="#ffffff", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
+            return
+        
+        for index, line in enumerate(self.lines, start=1):
+            frame = Frame(self.audio_list_frame, bg="#f9fafb", padx=10, pady=8)
+            frame.pack(fill=X, pady=(0, 6))
+            
+            # Número da frase
+            Label(frame, text=f"{index}.", bg="#f9fafb", fg="#657084", font=("Segoe UI", 9, "bold"), width=3).pack(side=LEFT)
+            
+            # Texto da frase
+            text_label = Label(frame, text=line.text[:80] + ("..." if len(line.text) > 80 else ""), bg="#f9fafb", fg="#111827", font=("Segoe UI", 9), wraplength=500, justify=LEFT)
+            text_label.pack(side=LEFT, fill=X, expand=True, padx=(6, 10))
+            
+            # Botão Escutar - usa caminho correto
+            audio_path = CLIPBOARD_MEDIA_DIR / f"audio_{index:03d}.wav"
+            if audio_path.exists():
+                Button(frame, text="Escutar áudio", command=lambda p=audio_path: self._play_audio(p), bg="#e0f2fe", fg="#0369a1", relief="flat", padx=10, pady=4, font=("Segoe UI", 9)).pack(side=RIGHT)
+            else:
+                Label(frame, text="Áudio não gerado", bg="#f9fafb", fg="#9ca3af", font=("Segoe UI", 8)).pack(side=RIGHT, padx=(10, 0))
+
+    def _play_audio(self, audio_path: Path) -> None:
+        """Toca um arquivo de áudio usando sounddevice."""
+        try:
+            import sounddevice as sd
+            # Lê o arquivo de áudio
+            data, samplerate = sf.read(str(audio_path))
+            # Toca o áudio
+            sd.play(data, samplerate)
+            # Aguarda até terminar
+            sd.wait()
+        except ImportError:
+            # Fallback usando subprocess
+            try:
+                if sys.platform == "win32":
+                    import os
+                    os.startfile(str(audio_path))
+                elif sys.platform == "darwin":
+                    subprocess.run(["afplay", str(audio_path)], check=False)
+                else:
+                    subprocess.run(["aplay", str(audio_path)], check=False)
+            except Exception as e:
+                messagebox.showerror(APP_TITLE, f"Erro ao reproduzir áudio: {e}")
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, f"Erro ao reproduzir áudio: {e}")
+
+    def _choose_voice_ref_file(self) -> None:
+        file_path = filedialog.askopenfilename(
+            title="Selecionar áudio de referência",
+            filetypes=[
+                ("Arquivos de áudio", "*.mp3 *.wav *.m4a *.aac *.ogg *.flac"),
+                ("Todos os arquivos", "*.*"),
+            ],
+        )
+        if file_path:
+            self.tts_voice_ref_path.set(file_path)
+            self._save_config()
+
+    def _load_kokoro_model(self) -> None:
+        """Carrega o modelo Kokoro para TTS."""
+        if not KOKORO_AVAILABLE:
+            messagebox.showerror(APP_TITLE, "Kokoro não está instalado. Instale com: pip install kokoro")
+            return
+        
+        try:
+            self.status_text.set("Carregando modelo Kokoro...")
+            self.root.update()
+            
+            # Mapeia o código de idioma para o formato do Kokoro
+            lang_mapping = {
+                "pt-br": "p",
+                "en-us": "a",
+                "en-gb": "b",
+                "es": "e",
+                "fr": "f",
+                "hi": "h",
+                "it": "i",
+                "ja": "j",
+                "zh": "z"
+            }
+            lang_code = lang_mapping.get(self.tts_language.get().lower(), "p")
+            # KPipeline já carrega o modelo internamente quando model=True (padrão)
+            self.kokoro_pipeline = KPipeline(lang_code=lang_code, model=False)  # Carrega sem modelo para economizar memória
+            # O modelo será carregado sob demanda se necessário
+            
+            self.tts_model_loaded = True
+            self.tts_status_label.configure(text="Modelo Kokoro: Carregado e pronto", fg="#059669")
+        except MemoryError:
+            self.tts_status_label.configure(text="Erro: Memória insuficiente", fg="#dc2626")
+            self.status_text.set("Erro: Kokoro requer mais memória RAM")
+            messagebox.showerror(APP_TITLE, 
+                "Memória insuficiente para carregar o Kokoro.\n\n"
+                "Soluções:\n"
+                "1. Feche outros programas para liberar memória\n"
+                "2. Use um sistema com pelo menos 4GB de RAM livre\n"
+                "3. Considere usar um serviço de TTS online alternativo")
+        except Exception as e:
+            self.tts_status_label.configure(text=f"Erro ao carregar modelo: {e}", fg="#dc2626")
+            self.status_text.set(f"Erro: {e}")
+            messagebox.showerror(APP_TITLE, f"Erro ao carregar modelo Kokoro:\n{e}")
+
+    def _generate_all_audios(self) -> None:
+        """Gera todos os áudios das frases."""
+        if not self.lines:
+            messagebox.showerror(APP_TITLE, "Nenhuma frase no roteiro. Gere um roteiro primeiro.")
+            return
+        
+        if not KOKORO_AVAILABLE:
+            messagebox.showerror(APP_TITLE, "Kokoro não está instalado. Instale com: pip install kokoro")
+            return
+        
+        if not self.tts_model_loaded:
+            messagebox.showwarning(APP_TITLE, "Modelo Kokoro não carregado.\nClique em Carregar Modelo Kokoro antes de gerar os áudios.")
+            return
+        
+        # Cria diretório de mídia
+        CLIPBOARD_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+        
+        self.progress.configure(value=0, maximum=len(self.lines))
+        self.progress_text.set(f"Gerando áudio 0/{len(self.lines)}")
+        
+        threading.Thread(target=self._generate_all_audios_worker, daemon=True).start()
+
+    def _generate_all_audios_worker(self) -> None:
+        """Worker para gerar todos os áudios em thread separada."""
+        try:
+            # Mapeia o código de idioma para o formato do Kokoro
+            lang_mapping = {
+                "pt-br": "p",
+                "en-us": "a",
+                "en-gb": "b",
+                "es": "e",
+                "fr": "f",
+                "hi": "h",
+                "it": "i",
+                "ja": "j",
+                "zh": "z"
+            }
+            lang_code = lang_mapping.get(self.tts_language.get().lower(), "p")
+            
+            # Carrega o modelo com memória limitada
+            import torch
+            from kokoro import KModel
+            
+            self.message_queue.put(("status", "Carregando modelo TTS..."))
+            
+            # Tenta carregar o modelo com menos memória
+            try:
+                model = KModel()
+                # Se tiver áudio de referência, usa para carregar a voz
+                voice_name = "af_heart"  # Voz padrão
+                
+                if self.tts_voice_ref_path.get().strip():
+                    ref_path = Path(self.tts_voice_ref_path.get().strip())
+                    if ref_path.exists():
+                        try:
+                            import torchaudio
+                            waveform, sample_rate = torchaudio.load(str(ref_path))
+                            if sample_rate != 24000:
+                                transform = torchaudio.transforms.Resample(sample_rate, 24000)
+                                waveform = transform(waveform)
+                            # Salva como referência temporária
+                            temp_ref = CLIPBOARD_MEDIA_DIR / "voice_ref.wav"
+                            torchaudio.save(str(temp_ref), waveform, 24000)
+                            self.message_queue.put(("status", f"Voz de referência carregada: {ref_path.name}"))
+                        except Exception as e:
+                            self.message_queue.put(("status", f"Aviso: Não foi possível usar áudio de referência ({e})"))
+                
+                # Cria novo pipeline com modelo
+                pipeline = KPipeline(lang_code=lang_code, model=model)
+                
+            except MemoryError:
+                self.message_queue.put(("error", "Memória insuficiente para carregar o modelo TTS"))
+                return
+            except Exception as e:
+                self.message_queue.put(("error", f"Erro ao carregar modelo: {e}"))
+                return
+            
+            for index, line in enumerate(self.lines, start=1):
+                self.message_queue.put(("status", f"Gerando áudio {index}/{len(self.lines)}: {line.text[:50]}..."))
+                
+                audio_path = CLIPBOARD_MEDIA_DIR / f"audio_{index:03d}.wav"
+                
+                try:
+                    # Gera áudio com Kokoro
+                    generator = pipeline(line.text, voice=voice_name)
+                    
+                    # Salva o áudio gerado
+                    with wave.open(str(audio_path), "wb") as wf:
+                        wf.setnchannels(1)
+                        wf.setsampwidth(2)
+                        wf.setframerate(24000)
+                        
+                        for chunk in generator:
+                            # Converte float32 para int16
+                            if hasattr(chunk, 'numpy'):
+                                audio_data = (chunk.numpy() * 32767).astype(np.int16)
+                            else:
+                                audio_data = (torch.from_numpy(chunk) * 32767).to(torch.int16).numpy()
+                            wf.writeframes(audio_data.tobytes())
+                    
+                    self.message_queue.put(("progress", str(index)))
+                except Exception as e:
+                    self.message_queue.put(("status", f"Erro na frase {index}: {e}"))
+            
+            self.root.after(0, self._refresh_audio_list)
+            self.message_queue.put(("done", "Áudios gerados com sucesso!"))
+            
+        except Exception as e:
+            self.message_queue.put(("error", f"Erro ao gerar áudios: {e}"))
 
     def _build_music_tab(self, parent: Frame) -> None:
         top = Frame(parent, bg="#ffffff")
@@ -754,24 +1027,25 @@ class VideoGeneratorApp:
                 self.subtitle_outline_color.set(data.get("subtitle_outline_color", self.subtitle_outline_color.get()))
                 self.subtitle_font.set(data.get("subtitle_font", self.subtitle_font.get()))
                 self.subtitle_preview_text.set(data.get("subtitle_preview_text", self.subtitle_preview_text.get()))
-                self.chatgpt_shortcut.set(data.get("chatgpt_shortcut", self.chatgpt_shortcut.get()))
-                self.chatgpt_response_wait.set(data.get("chatgpt_response_wait", self.chatgpt_response_wait.get()))
-                self.chatgpt_send_wait.set(data.get("chatgpt_send_wait", self.chatgpt_send_wait.get()))
-                self.chatgpt_menu_wait.set(data.get("chatgpt_menu_wait", self.chatgpt_menu_wait.get()))
-                self.chatgpt_menu_x.set(data.get("chatgpt_menu_x", self.chatgpt_menu_x.get()))
-                self.chatgpt_menu_y.set(data.get("chatgpt_menu_y", self.chatgpt_menu_y.get()))
-                self.chatgpt_input_x.set(data.get("chatgpt_input_x", self.chatgpt_input_x.get()))
-                self.chatgpt_input_y.set(data.get("chatgpt_input_y", self.chatgpt_input_y.get()))
-                self.chatgpt_send_x.set(data.get("chatgpt_send_x", self.chatgpt_send_x.get()))
-                self.chatgpt_send_y.set(data.get("chatgpt_send_y", self.chatgpt_send_y.get()))
-                self.chatgpt_read_x.set(data.get("chatgpt_read_x", self.chatgpt_read_x.get()))
-                self.chatgpt_read_y.set(data.get("chatgpt_read_y", self.chatgpt_read_y.get()))
-                self.chatgpt_record_extra.set(data.get("chatgpt_record_extra", self.chatgpt_record_extra.get()))
+                self.qwen_shortcut.set(data.get("qwen_shortcut", self.qwen_shortcut.get()))
+                self.qwen_response_wait.set(data.get("qwen_response_wait", self.qwen_response_wait.get()))
+                self.qwen_send_wait.set(data.get("qwen_send_wait", self.qwen_send_wait.get()))
+                self.qwen_menu_wait.set(data.get("qwen_menu_wait", self.qwen_menu_wait.get()))
+                self.qwen_menu_x.set(data.get("qwen_menu_x", self.qwen_menu_x.get()))
+                self.qwen_menu_y.set(data.get("qwen_menu_y", self.qwen_menu_y.get()))
+                self.qwen_input_x.set(data.get("qwen_input_x", self.qwen_input_x.get()))
+                self.qwen_input_y.set(data.get("qwen_input_y", self.qwen_input_y.get()))
+                self.qwen_send_x.set(data.get("qwen_send_x", self.qwen_send_x.get()))
+                self.qwen_send_y.set(data.get("qwen_send_y", self.qwen_send_y.get()))
+                self.qwen_read_x.set(data.get("qwen_read_x", self.qwen_read_x.get()))
+                self.qwen_read_y.set(data.get("qwen_read_y", self.qwen_read_y.get()))
+                self.qwen_record_extra.set(data.get("qwen_record_extra", self.qwen_record_extra.get()))
                 self.music_path.set(data.get("music_path", self.music_path.get()))
                 self.music_volume.set(data.get("music_volume", self.music_volume.get()))
                 self.logo_path.set(data.get("logo_path", self.logo_path.get()))
                 self.logo_position.set(data.get("logo_position", self.logo_position.get()) or self.logo_position.get())
                 self.logo_size.set(data.get("logo_size", self.logo_size.get()))
+                self.tts_voice_ref_path.set(data.get("tts_voice_ref_path", self.tts_voice_ref_path.get()))
             except json.JSONDecodeError:
                 pass
 
@@ -782,6 +1056,7 @@ class VideoGeneratorApp:
             "groq_key": self.groq_key.get().strip(),
             "video_title": self.video_title.get().strip(),
             "script_text": self.script_text_value,
+            "script_prompt": self.script_prompt_value.get().strip(),
             "script_lines": self._config_script_lines(),
             "output_dir": self.output_dir.get().strip(),
             "video_extra_after_audio": self.video_extra_after_audio.get().strip(),
@@ -795,24 +1070,25 @@ class VideoGeneratorApp:
             "subtitle_outline_color": self.subtitle_outline_color.get().strip(),
             "subtitle_font": self.subtitle_font.get().strip(),
             "subtitle_preview_text": self.subtitle_preview_text.get().strip(),
-            "chatgpt_shortcut": self.chatgpt_shortcut.get().strip(),
-            "chatgpt_response_wait": self.chatgpt_response_wait.get().strip(),
-            "chatgpt_send_wait": self.chatgpt_send_wait.get().strip(),
-            "chatgpt_menu_wait": self.chatgpt_menu_wait.get().strip(),
-            "chatgpt_menu_x": self.chatgpt_menu_x.get().strip(),
-            "chatgpt_menu_y": self.chatgpt_menu_y.get().strip(),
-            "chatgpt_input_x": self.chatgpt_input_x.get().strip(),
-            "chatgpt_input_y": self.chatgpt_input_y.get().strip(),
-            "chatgpt_send_x": self.chatgpt_send_x.get().strip(),
-            "chatgpt_send_y": self.chatgpt_send_y.get().strip(),
-            "chatgpt_read_x": self.chatgpt_read_x.get().strip(),
-            "chatgpt_read_y": self.chatgpt_read_y.get().strip(),
-            "chatgpt_record_extra": self.chatgpt_record_extra.get().strip(),
+            "qwen_shortcut": self.qwen_shortcut.get().strip(),
+            "qwen_response_wait": self.qwen_response_wait.get().strip(),
+            "qwen_send_wait": self.qwen_send_wait.get().strip(),
+            "qwen_menu_wait": self.qwen_menu_wait.get().strip(),
+            "qwen_menu_x": self.qwen_menu_x.get().strip(),
+            "qwen_menu_y": self.qwen_menu_y.get().strip(),
+            "qwen_input_x": self.qwen_input_x.get().strip(),
+            "qwen_input_y": self.qwen_input_y.get().strip(),
+            "qwen_send_x": self.qwen_send_x.get().strip(),
+            "qwen_send_y": self.qwen_send_y.get().strip(),
+            "qwen_read_x": self.qwen_read_x.get().strip(),
+            "qwen_read_y": self.qwen_read_y.get().strip(),
+            "qwen_record_extra": self.qwen_record_extra.get().strip(),
             "music_path": self.music_path.get().strip(),
             "music_volume": self.music_volume.get().strip(),
             "logo_path": self.logo_path.get().strip(),
             "logo_position": self.logo_position.get().strip(),
             "logo_size": self.logo_size.get().strip(),
+            "tts_voice_ref_path": self.tts_voice_ref_path.get().strip(),
         }
         CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
         if show_status:
@@ -1295,7 +1571,6 @@ class VideoGeneratorApp:
             return
         out_dir = Path(self.output_dir.get()).expanduser()
         out_dir.mkdir(parents=True, exist_ok=True)
-        self.chatgpt_window_ready = False
         self._save_config()
         self.progress.configure(value=0, maximum=max(len(self.lines) * 3 + 1, 1))
         self.progress_text.set("Gerando...")
@@ -1354,653 +1629,77 @@ class VideoGeneratorApp:
             self.message_queue.put(("error", str(exc)))
 
     def _generate_tts(self, text: str, output_path: Path) -> None:
-        """Gera áudio usando Qwen TTS via navegador."""
-        self._queue_status("Abrindo Qwen...", step=True)
+        """Gera áudio usando Kokoro TTS localmente."""
+        if not KOKORO_AVAILABLE:
+            raise RuntimeError("Kokoro não está instalado. Instale com: pip install kokoro")
         
-        # Abre o Qwen
-        webbrowser.open(QWEN_URL)
+        if not self.tts_model_loaded:
+            raise RuntimeError("Modelo Kokoro não carregado. Carregue o modelo na aba Audio primeiro.")
         
-        # Aguarda o navegador abrir
-        time.sleep(5)
-        
-        # Cola no campo de input do Qwen
-        pyperclip.copy(f'apenas repita isso: "{text}"')
-        pyautogui.hotkey('ctrl', 'v')
-        time.sleep(0.5)
-
-        before_capture = self._capture_chatgpt_window()
-        
-        # Pressiona Enter para enviar
-        pyautogui.press('enter')
-        
-        # Aguarda o Qwen concluir o pensamento e exibir a resposta
-        response_wait = self._safe_float(self.chatgpt_response_wait.get(), 8.0, 1.0, 60.0)
-        self._queue_status(f"Aguardando “Pensamento concluído” no Qwen ({response_wait}s)...", step=True)
-        capture, _menu_point = self._wait_for_qwen_thought_completed(before_capture, response_wait)
-        
-        # Encontra e clica nos 3 pontinhos e "Leia em voz alta"
-        self._click_read_aloud_simple(capture)
-        
-        # Grava o áudio do sistema
-        record_duration = self._safe_float(self.chatgpt_record_extra.get(), 2.0, 0.5, 30.0) + len(text) * 0.1
-        self._queue_status("Gravando áudio do sistema...", step=True)
-        self._record_system_audio(output_path, record_duration)
-    
-    def _click_read_aloud_simple(self, capture: WindowCapture) -> None:
-        """Método simplificado para clicar nos 3 pontinhos e em Leia em voz alta.
-        
-        Tenta primeiro encontrar os 3 pontinhos automaticamente usando processamento de imagem.
-        Se não encontrar, usa coordenadas relativas baseadas no tamanho da janela do Qwen.
-        As coordenadas podem ser ajustadas na aba Audio.
-        """
-        array = self._image_array(capture.image)
-        height, width, _ = array.shape
-        menu_candidates = self._rank_response_more_candidates(capture.image, self._response_more_candidates(capture.image))
-        if menu_candidates:
-            self._queue_status(f"Testando {min(len(menu_candidates), 8)} candidato(s) de 3 pontinhos...", step=True)
-        else:
-            self._queue_status("3 pontinhos não detectados; usando fallback por coordenadas.", step=True)
-
-        dots_x_ratio = self._safe_float(self.chatgpt_menu_x.get(), 0.92, 0.0, 1.0)
-        dots_y_ratio = self._safe_float(self.chatgpt_menu_y.get(), 0.75, 0.0, 1.0)
-        fallback_candidate = ScreenPoint(int(width * dots_x_ratio), int(height * dots_y_ratio))
-        if not any(abs(candidate.x - fallback_candidate.x) <= 8 and abs(candidate.y - fallback_candidate.y) <= 8 for candidate in menu_candidates):
-            menu_candidates.append(fallback_candidate)
-
-        menu_wait = self._safe_float(self.chatgpt_menu_wait.get(), 1.0, 0.2, 10.0)
-        read_x_ratio = self._safe_float(self.chatgpt_read_x.get(), 0.88, 0.0, 1.0)
-        read_y_ratio = self._safe_float(self.chatgpt_read_y.get(), 0.82, 0.0, 1.0)
-        old_failsafe = getattr(pyautogui, "FAILSAFE", True)
-        pyautogui.FAILSAFE = False
         try:
-            for local_menu_point in menu_candidates[:8]:
-                screen_menu_point = self._to_screen(capture, local_menu_point)
-                pyautogui.press("esc")
-                time.sleep(0.08)
-                self._queue_status(f"Clicando nos 3 pontinhos em ({screen_menu_point.x}, {screen_menu_point.y})...", step=True)
-                pyautogui.click(screen_menu_point.x, screen_menu_point.y)
-                time.sleep(menu_wait)
+            # Mapeia o código de idioma para o formato do Kokoro
+            lang_mapping = {
+                "pt-br": "p",
+                "en-us": "a",
+                "en-gb": "b",
+                "es-es": "e",
+                "fr-fr": "f",
+                "de-de": "g",
+                "it-it": "i",
+                "ja-jp": "j",
+                "zh-cn": "z"
+            }
+            lang_code = lang_mapping.get(self.tts_language.get().lower(), "p")
+            
+            # Carrega o modelo
+            model = KModel()
+            voice_name = "af_heart"  # Voz padrão
+            
+            # Se tiver áudio de referência, usa para carregar a voz
+            if self.tts_voice_ref_path.get().strip():
+                ref_path = Path(self.tts_voice_ref_path.get().strip())
+                if ref_path.exists():
+                    try:
+                        import torchaudio
+                        waveform, sample_rate = torchaudio.load(str(ref_path))
+                        if sample_rate != 24000:
+                            transform = torchaudio.transforms.Resample(sample_rate, 24000)
+                            waveform = transform(waveform)
+                        # Salva como referência temporária
+                        temp_ref = CLIPBOARD_MEDIA_DIR / "voice_ref.wav"
+                        CLIPBOARD_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+                        torchaudio.save(str(temp_ref), waveform, 24000)
+                        self._queue_status(f"Usando voz de referência: {ref_path.name}", step=True)
+                    except Exception as e:
+                        self._queue_status(f"Aviso: Não foi possível usar áudio de referência ({e})", step=True)
+            
+            # Cria pipeline com modelo
+            pipeline = KPipeline(lang_code=lang_code, model=model)
+            
+            # Gera áudio com Kokoro
+            generator = pipeline(text, voice=voice_name)
+            
+            # Salva o áudio gerado
+            with wave.open(str(output_path), "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(24000)
+                
+                for chunk in generator:
+                    # Converte float32 para int16
+                    if hasattr(chunk, 'numpy'):
+                        audio_data = (chunk.numpy() * 32767).astype(np.int16)
+                    else:
+                        audio_data = (torch.from_numpy(chunk) * 32767).to(torch.int16).numpy()
+                    wf.writeframes(audio_data.tobytes())
+            
+            self._queue_status(f"Áudio gerado: {text[:50]}...", step=True)
+            
+        except MemoryError:
+            raise RuntimeError("Memória insuficiente para gerar áudio. Tente fechar outros programas.")
+        except Exception as e:
+            raise RuntimeError(f"Erro ao gerar áudio com Kokoro: {e}")
 
-                menu_capture = self._capture_chatgpt_window()
-                try:
-                    read_local_point = self._find_read_aloud_point(capture.image, menu_capture.image, screen_menu_point, menu_capture)
-                    read_screen_point = self._to_screen(menu_capture, read_local_point)
-                    self._queue_status(f"'Leia em voz alta' encontrado automaticamente em ({read_screen_point.x}, {read_screen_point.y})...", step=True)
-                except RuntimeError:
-                    if local_menu_point != fallback_candidate:
-                        continue
-                    menu_array = self._image_array(menu_capture.image)
-                    menu_height, menu_width, _ = menu_array.shape
-                    read_screen_point = ScreenPoint(
-                        menu_capture.offset_x + int(menu_width * read_x_ratio),
-                        menu_capture.offset_y + int(menu_height * read_y_ratio),
-                    )
-                    self._queue_status(f"Usando coordenadas fixas para 'Leia em voz alta' ({read_screen_point.x}, {read_screen_point.y})...", step=True)
-
-                final_x, final_y = self._safe_screen_point(read_screen_point)
-                self._queue_status(f"Clicando em 'Leia em voz alta' ({final_x}, {final_y})...", step=True)
-                pyautogui.click(final_x, final_y)
-                time.sleep(0.5)
-                return
-        finally:
-            pyautogui.FAILSAFE = old_failsafe
-
-        raise RuntimeError("Não consegui abrir o menu de leitura em voz alta nos 3 pontinhos da resposta do Qwen.")
-
-    def _play_read_aloud_and_record(
-        self,
-        response_capture: WindowCapture,
-        menu_point: ScreenPoint,
-        output_path: Path,
-        record_duration: float,
-    ) -> float:
-        read_point: ScreenPoint | None = None
-        menu_capture: WindowCapture | None = None
-        attempts = [menu_point]
-        local_candidates = self._rank_response_more_candidates(response_capture.image, self._response_more_candidates(response_capture.image))
-        for local_candidate in local_candidates:
-            screen_candidate = self._to_screen(response_capture, local_candidate)
-            if not any(abs(screen_candidate.x - point.x) <= 8 and abs(screen_candidate.y - point.y) <= 8 for point in attempts):
-                attempts.append(screen_candidate)
-
-        for attempt in attempts[:8]:
-            pyautogui.press("esc")
-            time.sleep(0.08)
-            pyautogui.click(attempt.x, attempt.y)
-            time.sleep(self._safe_float(self.chatgpt_menu_wait.get(), 1.0, 0.2, 10.0))
-            candidate_capture = self._capture_chatgpt_window()
-            if not self._menu_component_near_click(response_capture.image, candidate_capture.image, attempt, candidate_capture):
-                continue
-            try:
-                read_point = self._to_screen(candidate_capture, self._find_read_aloud_point(response_capture.image, candidate_capture.image, attempt, candidate_capture))
-                menu_capture = candidate_capture
-                break
-            except RuntimeError:
-                continue
-
-        if read_point is None or menu_capture is None:
-            raise RuntimeError("Abri os 3 pontinhos, mas não consegui confirmar o menu de leitura em voz alta. Tente aumentar as esperas da aba Audio.")
-
-        def start_read_aloud() -> None:
-            pyautogui.click(read_point.x, read_point.y)
-            time.sleep(0.05)
-
-        return self._record_system_audio(output_path, record_duration, on_ready=start_read_aloud)
-
-    @staticmethod
-    def _chatgpt_repeat_prompt(text: str) -> str:
-        quoted_text = " ".join(text.replace('"', "'").split())
-        return f'Responda somente com esta frase entre aspas, sem adicionar nada antes ou depois: "{quoted_text}"'
-
-    def _capture_chatgpt_window(self) -> WindowCapture:
-        window = None
-        try:
-            if hasattr(pyautogui, "getActiveWindow"):
-                window = pyautogui.getActiveWindow()
-        except Exception:
-            window = None
-
-        if window and getattr(window, "width", 0) > 200 and getattr(window, "height", 0) > 200:
-            left = max(int(window.left), 0)
-            top = max(int(window.top), 0)
-            width = int(window.width)
-            height = int(window.height)
-            return WindowCapture(pyautogui.screenshot(region=(left, top, width, height)), left, top)
-
-        return WindowCapture(pyautogui.screenshot(), 0, 0)
-
-    @staticmethod
-    def _to_screen(capture: WindowCapture, point: ScreenPoint) -> ScreenPoint:
-        return ScreenPoint(capture.offset_x + point.x, capture.offset_y + point.y)
-
-    @staticmethod
-    def _safe_screen_point(point: ScreenPoint, margin: int = 50) -> tuple[int, int]:
-        screen_width, screen_height = pyautogui.size()
-        return (
-            min(max(point.x, margin), screen_width - margin),
-            min(max(point.y, margin), screen_height - margin),
-        )
-
-    @staticmethod
-    def _image_array(image: Any) -> np.ndarray:
-        if hasattr(image, "convert"):
-            image = image.convert("RGB")
-        array = np.asarray(image)
-        if array.ndim == 2:
-            array = np.repeat(array[:, :, None], 3, axis=2)
-        if array.shape[2] > 3:
-            array = array[:, :, :3]
-        return array.astype(np.int16)
-
-    def _find_chatgpt_composer(self, image: Any) -> ScreenBounds:
-        array = self._image_array(image)
-        height, width, _ = array.shape
-        channels_spread = array.max(axis=2) - array.min(axis=2)
-        gray_mask = (
-            (array[:, :, 0] >= 16)
-            & (array[:, :, 0] <= 82)
-            & (array[:, :, 1] >= 16)
-            & (array[:, :, 1] <= 82)
-            & (array[:, :, 2] >= 16)
-            & (array[:, :, 2] <= 82)
-            & (channels_spread <= 18)
-        )
-        gray_mask[: int(height * 0.45), :] = False
-
-        row_counts = gray_mask.sum(axis=1)
-        row_threshold = max(80, int(width * 0.25))
-        segments: list[tuple[int, int]] = []
-        segment_start: int | None = None
-        for row, count in enumerate(row_counts):
-            if count >= row_threshold and segment_start is None:
-                segment_start = row
-            elif count < row_threshold and segment_start is not None:
-                if row - segment_start >= 35:
-                    segments.append((segment_start, row))
-                segment_start = None
-        if segment_start is not None and height - segment_start >= 35:
-            segments.append((segment_start, height))
-        if not segments:
-            return self._fallback_chatgpt_composer(width, height)
-
-        top, bottom = max(segments, key=lambda item: item[1])
-        band = gray_mask[top:bottom, :]
-        col_counts = band.sum(axis=0)
-        col_threshold = max(20, int((bottom - top) * 0.25))
-        cols = np.where(col_counts >= col_threshold)[0]
-        if cols.size == 0:
-            return self._fallback_chatgpt_composer(width, height)
-        left = max(int(cols[0]), int(width * 0.02))
-        right = min(int(cols[-1]) + 1, int(width * 0.98))
-        if bottom - top < 35 or right - left < max(120, int(width * 0.25)):
-            return self._fallback_chatgpt_composer(width, height)
-        return ScreenBounds(left, int(top), right, int(bottom))
-
-    @staticmethod
-    def _fallback_chatgpt_composer(width: int, height: int) -> ScreenBounds:
-        return ScreenBounds(
-            max(12, int(width * 0.035)),
-            max(0, height - max(120, int(height * 0.16))),
-            min(width - 12, int(width * 0.965)),
-            max(1, height - max(24, int(height * 0.04))),
-        )
-
-    @staticmethod
-    def _composer_input_point(composer: ScreenBounds) -> ScreenPoint:
-        return ScreenPoint(composer.left + min(max(composer.width // 4, 80), 180), composer.top + composer.height // 2)
-
-    def _find_chatgpt_send_button(self, image: Any, composer: ScreenBounds) -> ScreenPoint:
-        array = self._image_array(image)
-        search_left = composer.left + int(composer.width * 0.68)
-        search = array[composer.top : composer.bottom, search_left : composer.right]
-        white_mask = (search[:, :, 0] >= 225) & (search[:, :, 1] >= 225) & (search[:, :, 2] >= 225)
-        ys, xs = np.where(white_mask)
-        if ys.size:
-            components = self._components(white_mask, min_area=60)
-            if components:
-                best = max(components, key=lambda bounds: bounds.width * bounds.height)
-                return ScreenPoint(search_left + best.center.x, composer.top + best.center.y)
-            return ScreenPoint(search_left + int(np.median(xs)), composer.top + int(np.median(ys)))
-        return ScreenPoint(composer.right - 36, composer.top + composer.height // 2)
-
-    def _wait_for_response_more_button(self, before_capture: WindowCapture, timeout: float) -> tuple[WindowCapture, ScreenPoint]:
-        before_candidates = self._response_more_candidates(before_capture.image)
-        time.sleep(max(timeout, 1.0))
-
-        capture = self._capture_chatgpt_window()
-        after_candidates = self._response_more_candidates(capture.image)
-        best_candidate = self._best_response_more_candidate(before_capture.image, before_candidates, capture.image, after_candidates)
-        if best_candidate is not None:
-            return capture, best_candidate
-
-        revealed = self._capture_chatgpt_with_revealed_actions(capture)
-        for reveal_capture in revealed:
-            reveal_candidates = self._response_more_candidates(reveal_capture.image)
-            best_candidate = self._best_response_more_candidate(before_capture.image, before_candidates, reveal_capture.image, reveal_candidates)
-            if best_candidate is not None:
-                return reveal_capture, best_candidate
-            if reveal_candidates:
-                capture = reveal_capture
-                after_candidates = reveal_candidates
-
-        settle_deadline = time.monotonic() + 4.5
-        while time.monotonic() < settle_deadline:
-            time.sleep(0.35)
-            capture = self._capture_chatgpt_window()
-            after_candidates = self._response_more_candidates(capture.image)
-            best_candidate = self._best_response_more_candidate(before_capture.image, before_candidates, capture.image, after_candidates)
-            if best_candidate is not None:
-                return capture, best_candidate
-            for reveal_capture in self._capture_chatgpt_with_revealed_actions(capture):
-                reveal_candidates = self._response_more_candidates(reveal_capture.image)
-                best_candidate = self._best_response_more_candidate(before_capture.image, before_candidates, reveal_capture.image, reveal_candidates)
-                if best_candidate is not None:
-                    return reveal_capture, best_candidate
-                if reveal_candidates:
-                    capture = reveal_capture
-                    after_candidates = reveal_candidates
-
-        if after_candidates:
-            return capture, self._select_response_more_candidate(capture.image, after_candidates)
-
-        raise RuntimeError(
-            "Não consegui localizar os 3 pontinhos da resposta do Qwen depois da espera configurada. "
-            "Aumente o tempo de espera da resposta na aba Audio se o Qwen ainda estiver escrevendo."
-        )
-
-    def _wait_for_qwen_thought_completed(self, before_capture: WindowCapture, timeout: float) -> tuple[WindowCapture, ScreenPoint]:
-        # O Qwen mostra “Pensamento concluído” antes da resposta final e, em seguida,
-        # exibe a fileira de ações da resposta. Sem OCR, a confirmação robusta no app
-        # é aguardar a nova fileira de ações/3 pontinhos aparecer e ser ranqueada.
-        return self._wait_for_response_more_button(before_capture, timeout)
-
-    def _best_response_more_candidate(
-        self,
-        before_image: Any,
-        before_candidates: list[ScreenPoint],
-        after_image: Any,
-        after_candidates: list[ScreenPoint],
-    ) -> ScreenPoint | None:
-        return (
-            self._best_new_more_candidate(before_candidates, after_candidates)
-            or self._best_changed_more_candidate(before_image, after_image, after_candidates)
-        )
-
-    def _capture_chatgpt_with_revealed_actions(self, capture: WindowCapture) -> list[WindowCapture]:
-        array = self._image_array(capture.image)
-        height, width, _ = array.shape
-        try:
-            composer = self._find_chatgpt_composer(capture.image)
-            bottom_limit = max(composer.top - 18, int(height * 0.50))
-        except RuntimeError:
-            bottom_limit = int(height * 0.82)
-        y_positions = [
-            max(int(height * 0.42), bottom_limit - 30),
-            max(int(height * 0.38), bottom_limit - 70),
-            max(int(height * 0.34), bottom_limit - 115),
-            max(int(height * 0.28), bottom_limit - 170),
-            max(int(height * 0.22), bottom_limit - 235),
-        ]
-        x_positions = [int(width * fraction) for fraction in (0.46, 0.54, 0.62, 0.70, 0.78, 0.86)]
-        captures: list[WindowCapture] = []
-        for y in y_positions:
-            for x in x_positions:
-                pyautogui.moveTo(capture.offset_x + x, capture.offset_y + y, duration=0.05)
-                time.sleep(0.12)
-                captures.append(self._capture_chatgpt_window())
-        return captures
-
-    def _find_response_more_button(self, image: Any) -> ScreenPoint:
-        candidates = self._response_more_candidates(image)
-        if not candidates:
-            raise RuntimeError("Não consegui localizar os 3 pontinhos da resposta do Qwen na captura da janela.")
-        return self._select_response_more_candidate(image, candidates)
-
-    def _response_more_candidates(self, image: Any) -> list[ScreenPoint]:
-        array = self._image_array(image)
-        height, _, _ = array.shape
-        channels_spread = array.max(axis=2) - array.min(axis=2)
-        channel_mean = array.mean(axis=2)
-        dot_masks = [
-            (channel_mean >= 135) & (channels_spread <= 85),
-            (channel_mean <= 115) & (channels_spread <= 85),
-        ]
-        for dot_mask in dot_masks:
-            dot_mask[: int(height * 0.14), :] = False
-        try:
-            composer = self._find_chatgpt_composer(image)
-            if composer.top > int(height * 0.60):
-                for dot_mask in dot_masks:
-                    dot_mask[max(composer.top - 4, 0) :, :] = False
-            else:
-                for dot_mask in dot_masks:
-                    dot_mask[int(height * 0.82) :, :] = False
-        except RuntimeError:
-            for dot_mask in dot_masks:
-                dot_mask[int(height * 0.82) :, :] = False
-
-        tiny = [
-            component
-            for dot_mask in dot_masks
-            for component in self._components(dot_mask, min_area=1)
-            if 1 <= component.width <= 14
-            and 1 <= component.height <= 14
-            and component.width * component.height <= 130
-        ]
-        centers = [component.center for component in tiny]
-        candidates: list[ScreenPoint] = []
-
-        def add_candidate(candidate: ScreenPoint) -> None:
-            if not any(abs(candidate.x - existing.x) <= 5 and abs(candidate.y - existing.y) <= 5 for existing in candidates):
-                candidates.append(candidate)
-
-        icon_components: list[ScreenBounds] = []
-        for dot_mask in dot_masks:
-            for component in self._components(dot_mask, min_area=1):
-                if self._looks_like_more_icon_component(component):
-                    icon_components.append(component)
-                    add_candidate(component.center)
-
-        for candidate in self._action_row_more_candidates(icon_components):
-            add_candidate(candidate)
-
-        for first in centers:
-            horizontal_neighbors = [point for point in centers if abs(point.y - first.y) <= 6 and 3 <= point.x - first.x <= 34]
-            for second in horizontal_neighbors:
-                third_options = [point for point in centers if abs(point.y - first.y) <= 6 and 3 <= point.x - second.x <= 34]
-                for third in third_options:
-                    span = third.x - first.x
-                    first_gap = second.x - first.x
-                    second_gap = third.x - second.x
-                    if 8 <= span <= 52 and max(first_gap, second_gap) <= min(first_gap, second_gap) * 2.6:
-                        add_candidate(ScreenPoint((first.x + third.x) // 2, int(round((first.y + second.y + third.y) / 3))))
-
-            vertical_neighbors = [point for point in centers if abs(point.x - first.x) <= 6 and 3 <= point.y - first.y <= 34]
-            for second in vertical_neighbors:
-                third_options = [point for point in centers if abs(point.x - first.x) <= 6 and 3 <= point.y - second.y <= 34]
-                for third in third_options:
-                    span = third.y - first.y
-                    first_gap = second.y - first.y
-                    second_gap = third.y - second.y
-                    if 8 <= span <= 52 and max(first_gap, second_gap) <= min(first_gap, second_gap) * 2.6:
-                        add_candidate(ScreenPoint(int(round((first.x + second.x + third.x) / 3)), (first.y + third.y) // 2))
-        return candidates
-
-    @staticmethod
-    def _looks_like_more_icon_component(component: ScreenBounds) -> bool:
-        area = max(component.width * component.height, 1)
-        if area > 900:
-            return False
-        horizontal_icon = 10 <= component.width <= 46 and 2 <= component.height <= 20
-        vertical_icon = 2 <= component.width <= 20 and 10 <= component.height <= 46
-        compact_icon = 6 <= component.width <= 32 and 6 <= component.height <= 32
-        return horizontal_icon or vertical_icon or compact_icon
-
-    @staticmethod
-    def _action_row_more_candidates(components: list[ScreenBounds]) -> list[ScreenPoint]:
-        # Na UI atual do Qwen a resposta mostra uma fileira de ações
-        # (copiar, compartilhar, regenerar e reticências). Quando as reticências
-        # são desenhadas como SVG/anti-aliasing, detectar os três pontos isolados
-        # pode falhar; nesse caso o botão de menu é o último ícone dessa fileira.
-        row_icons = [
-            component
-            for component in components
-            if 2 <= component.width <= 46 and 2 <= component.height <= 46
-        ]
-        candidates: list[ScreenPoint] = []
-        for component in row_icons:
-            same_row = [
-                other
-                for other in row_icons
-                if abs(other.center.y - component.center.y) <= 14
-                and 0 <= other.center.x - component.center.x <= 180
-            ]
-            if len(same_row) >= 3:
-                rightmost = max(same_row, key=lambda item: (item.center.x, item.center.y))
-                candidates.append(rightmost.center)
-        unique: list[ScreenPoint] = []
-        for candidate in candidates:
-            if not any(abs(candidate.x - existing.x) <= 5 and abs(candidate.y - existing.y) <= 5 for existing in unique):
-                unique.append(candidate)
-        return unique
-
-    def _select_response_more_candidate(self, image: Any, candidates: list[ScreenPoint]) -> ScreenPoint:
-        ranked = self._rank_response_more_candidates(image, candidates)
-        return ranked[0]
-
-    def _rank_response_more_candidates(self, image: Any, candidates: list[ScreenPoint]) -> list[ScreenPoint]:
-        if not candidates:
-            return []
-        array = self._image_array(image)
-        height, width, _ = array.shape
-        try:
-            composer = self._find_chatgpt_composer(image)
-            preferred_bottom = composer.top - 10
-        except RuntimeError:
-            preferred_bottom = int(height * 0.82)
-
-        def score(point: ScreenPoint) -> tuple[int, int, int]:
-            # Pontua mais alto o botão da última resposta: próximo ao composer, na metade inferior e longe das bordas.
-            y_score = -abs(preferred_bottom - point.y)
-            lower_half_bonus = 120 if point.y >= int(height * 0.42) else 0
-            edge_penalty = -80 if point.x < int(width * 0.18) or point.x > int(width * 0.94) else 0
-            row = [candidate for candidate in candidates if abs(candidate.y - point.y) <= 8 and candidate.x <= int(width * 0.55)]
-            action_row_bonus = 0
-            if point.x <= int(width * 0.55) and 3 <= len(row) <= 8 and point.x >= max(candidate.x for candidate in row) - 8:
-                # Na fileira de ações, o menu de 3 pontinhos é o último ícone à direita.
-                # Limitar o tamanho da fileira evita confundir linhas de texto com botões.
-                action_row_bonus = 180
-            return (action_row_bonus + lower_half_bonus + edge_penalty + y_score, point.y, point.x)
-
-        return sorted(candidates, key=score, reverse=True)
-
-    @staticmethod
-    def _best_new_more_candidate(before_candidates: list[ScreenPoint], after_candidates: list[ScreenPoint]) -> ScreenPoint | None:
-        new_candidates = [
-            candidate
-            for candidate in after_candidates
-            if not any(abs(candidate.x - before.x) <= 10 and abs(candidate.y - before.y) <= 10 for before in before_candidates)
-        ]
-        if not new_candidates:
-            if before_candidates:
-                before_bottom = max(point.y for point in before_candidates)
-                lower_candidates = [candidate for candidate in after_candidates if candidate.y > before_bottom + 12]
-                if lower_candidates:
-                    return max(lower_candidates, key=lambda point: (point.y, point.x))
-            return None
-        return max(new_candidates, key=lambda point: (point.y, point.x))
-
-    def _best_changed_more_candidate(self, before_image: Any, after_image: Any, candidates: list[ScreenPoint]) -> ScreenPoint | None:
-        before = self._image_array(before_image)
-        after = self._image_array(after_image)
-        min_height = min(before.shape[0], after.shape[0])
-        min_width = min(before.shape[1], after.shape[1])
-        diff = np.abs(after[:min_height, :min_width] - before[:min_height, :min_width]).max(axis=2)
-        scored_candidates: list[tuple[int, ScreenPoint]] = []
-        for point in candidates:
-            left = max(point.x - 60, 0)
-            right = min(point.x + 60, min_width)
-            top = max(point.y - 50, 0)
-            bottom = min(point.y + 35, min_height)
-            if right <= left or bottom <= top:
-                continue
-            score = int((diff[top:bottom, left:right] > 28).sum())
-            if score >= 80:
-                scored_candidates.append((score, point))
-        if not scored_candidates:
-            return None
-        return max(scored_candidates, key=lambda item: (item[0], item[1].y))[1]
-
-    def _find_read_aloud_point(self, before_image: Any, after_image: Any, clicked_menu_point: ScreenPoint, after_capture: WindowCapture) -> ScreenPoint:
-        component = self._menu_component_near_click(before_image, after_image, clicked_menu_point, after_capture)
-        if not component:
-            raise RuntimeError("O menu dos 3 pontinhos não apareceu perto do clique.")
-        read_x = component.left + min(max(int(component.width * 0.28), 70), component.width - 12)
-        read_y = component.top + min(max(component.height // 5, 34), 56)
-        return ScreenPoint(read_x, read_y)
-
-    def _menu_component_near_click(self, before_image: Any, after_image: Any, clicked_menu_point: ScreenPoint, after_capture: WindowCapture) -> ScreenBounds | None:
-        before = self._image_array(before_image)
-        after = self._image_array(after_image)
-        min_height = min(before.shape[0], after.shape[0])
-        min_width = min(before.shape[1], after.shape[1])
-        diff = np.abs(after[:min_height, :min_width] - before[:min_height, :min_width]).max(axis=2)
-        changed_mask = diff > 25
-        components = [component for component in self._components(changed_mask, min_area=120) if component.width > 30 and component.height > 12]
-        local_click = ScreenPoint(clicked_menu_point.x - after_capture.offset_x, clicked_menu_point.y - after_capture.offset_y)
-        nearby = [
-            component
-            for component in components
-            if abs(component.center.x - local_click.x) <= 340 and abs(component.center.y - local_click.y) <= 340
-        ]
-        if not nearby:
-            return None
-        # O menu é normalmente o maior retângulo novo perto dos 3 pontinhos clicados.
-        return max(nearby, key=lambda bounds: bounds.width * bounds.height)
-
-    @staticmethod
-    def _components(mask: np.ndarray, min_area: int = 1) -> list[ScreenBounds]:
-        height, width = mask.shape
-        visited = np.zeros(mask.shape, dtype=bool)
-        components: list[ScreenBounds] = []
-        for y in range(height):
-            xs = np.where(mask[y] & ~visited[y])[0]
-            for x_start in xs:
-                if visited[y, x_start] or not mask[y, x_start]:
-                    continue
-                stack = [(int(x_start), y)]
-                visited[y, x_start] = True
-                min_x = max_x = int(x_start)
-                min_y = max_y = y
-                area = 0
-                while stack:
-                    x, current_y = stack.pop()
-                    area += 1
-                    min_x = min(min_x, x)
-                    max_x = max(max_x, x)
-                    min_y = min(min_y, current_y)
-                    max_y = max(max_y, current_y)
-                    for nx in (x - 1, x, x + 1):
-                        for ny in (current_y - 1, current_y, current_y + 1):
-                            if nx == x and ny == current_y:
-                                continue
-                            if 0 <= nx < width and 0 <= ny < height and not visited[ny, nx] and mask[ny, nx]:
-                                visited[ny, nx] = True
-                                stack.append((nx, ny))
-                if area >= min_area:
-                    components.append(ScreenBounds(min_x, min_y, max_x + 1, max_y + 1))
-        return components
-
-    def _default_loopback_microphone(self) -> Any:
-        speaker = sc.default_speaker()
-        speaker_name = str(getattr(speaker, "name", speaker))
-        try:
-            microphone = sc.get_microphone(id=speaker_name, include_loopback=True)
-            if microphone is not None:
-                return microphone
-        except Exception:
-            pass
-
-        microphones = list(sc.all_microphones(include_loopback=True))
-        speaker_words = {word for word in re.split(r"\W+", speaker_name.lower()) if len(word) >= 3}
-        loopback_microphones = [microphone for microphone in microphones if "loopback" in str(getattr(microphone, "name", microphone)).lower()]
-        for microphone in loopback_microphones or microphones:
-            microphone_name = str(getattr(microphone, "name", microphone)).lower()
-            if speaker_words and any(word in microphone_name for word in speaker_words):
-                return microphone
-        if loopback_microphones:
-            return loopback_microphones[0]
-        if microphones:
-            return microphones[0]
-        raise RuntimeError("Não encontrei um dispositivo de gravação loopback para capturar o áudio do sistema.")
-
-    @contextmanager
-    def _continuous_loopback_recorder(self):
-        sample_rate = 48000
-        chunk_seconds = 0.25
-        chunk_frames = int(sample_rate * chunk_seconds)
-        if getattr(self, "_loopback_thread_running", False):
-            yield
-            return
-
-        microphone = self._default_loopback_microphone()
-        stop_event = threading.Event()
-        lock = threading.Lock()
-        self._loopback_chunks: list[np.ndarray] = []
-        self._loopback_collecting = False
-        self._loopback_lock = lock
-        self._loopback_sample_rate = sample_rate
-        self._loopback_chunk_seconds = chunk_seconds
-        self._loopback_thread_running = True
-
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="data discontinuity in recording.*")
-            with microphone.recorder(samplerate=sample_rate) as recorder:
-                def drain_loop() -> None:
-                    while not stop_event.is_set():
-                        try:
-                            chunk = recorder.record(numframes=chunk_frames)
-                        except Exception:
-                            if not stop_event.is_set():
-                                time.sleep(chunk_seconds)
-                            continue
-                        with lock:
-                            if self._loopback_collecting:
-                                self._loopback_chunks.append(chunk)
-
-                thread = threading.Thread(target=drain_loop, daemon=True)
-                thread.start()
-                try:
-                    yield
-                finally:
-                    stop_event.set()
-                    thread.join(timeout=2.0)
-                    self._loopback_thread_running = False
-                    self._loopback_collecting = False
-                    self._loopback_chunks = []
-
-    def _record_system_audio(self, output_path: Path, duration: float, on_ready: Callable[[], None] | None = None) -> float:
-        sample_rate = 48000
         chunk_seconds = 0.25
         silence_limit = 1.25
         silence_threshold = 0.003
@@ -2111,7 +1810,7 @@ class VideoGeneratorApp:
         return audio * max(gain, 1.0)
 
     def _estimated_tts_duration(self, text: str) -> float:
-        extra = self._safe_float(self.chatgpt_record_extra.get(), 2.0, 0.0, 30.0)
+        extra = self._safe_float(self.qwen_record_extra.get(), 2.0, 0.0, 30.0)
         return max(8.0, len(text) * 0.12 + extra)
 
     @staticmethod
@@ -2125,16 +1824,16 @@ class VideoGeneratorApp:
         end = min(int(loud[-1]) + padding, audio.size - 1)
         return audio[start : end + 1]
 
-    def _chatgpt_coordinates_ready(self) -> bool:
+    def _qwen_coordinates_ready(self) -> bool:
         values = [
-            self.chatgpt_input_x.get(),
-            self.chatgpt_input_y.get(),
-            self.chatgpt_send_x.get(),
-            self.chatgpt_send_y.get(),
-            self.chatgpt_menu_x.get(),
-            self.chatgpt_menu_y.get(),
-            self.chatgpt_read_x.get(),
-            self.chatgpt_read_y.get(),
+            self.qwen_input_x.get(),
+            self.qwen_input_y.get(),
+            self.qwen_send_x.get(),
+            self.qwen_send_y.get(),
+            self.qwen_menu_x.get(),
+            self.qwen_menu_y.get(),
+            self.qwen_read_x.get(),
+            self.qwen_read_y.get(),
         ]
         return all(self._safe_int(value, 0, 0, 10000) > 0 for value in values)
 
