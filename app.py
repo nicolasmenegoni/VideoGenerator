@@ -1795,68 +1795,6 @@ class VideoGeneratorApp:
         except Exception as e:
             raise RuntimeError(f"Erro ao gerar áudio com Kokoro: {e}")
 
-        def consume_chunk(chunk: np.ndarray) -> bool:
-            nonlocal speech_started, silent_time, elapsed
-            chunks.append(chunk)
-            level = self._audio_level(chunk)
-            if level > silence_threshold:
-                speech_started = True
-                silent_time = 0.0
-            elif speech_started:
-                silent_time += chunk_seconds
-            elapsed += chunk_seconds
-            return bool(speech_started and elapsed >= minimum_record_seconds and silent_time >= silence_limit)
-
-        if getattr(self, "_loopback_thread_running", False):
-            with self._loopback_lock:
-                self._loopback_chunks = []
-                self._loopback_collecting = True
-            if on_ready is not None:
-                on_ready()
-            try:
-                while elapsed < duration:
-                    time.sleep(chunk_seconds)
-                    with self._loopback_lock:
-                        pending = self._loopback_chunks
-                        self._loopback_chunks = []
-                    should_stop = False
-                    for chunk in pending:
-                        should_stop = consume_chunk(chunk) or should_stop
-                    if should_stop:
-                        break
-            finally:
-                with self._loopback_lock:
-                    self._loopback_collecting = False
-                    pending = self._loopback_chunks
-                    self._loopback_chunks = []
-                for chunk in pending:
-                    consume_chunk(chunk)
-        else:
-            chunk_frames = int(sample_rate * chunk_seconds)
-            microphone = self._default_loopback_microphone()
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", message="data discontinuity in recording.*")
-                with microphone.recorder(samplerate=sample_rate) as recorder:
-                    if on_ready is not None:
-                        on_ready()
-                    while elapsed < duration:
-                        if consume_chunk(recorder.record(numframes=chunk_frames)):
-                            break
-
-        audio = np.concatenate(chunks) if chunks else np.zeros(int(sample_rate * 0.5), dtype=np.float32)
-        audio = self._best_mono_audio(audio)
-        audio = self._trim_silence(audio, threshold=silence_threshold)
-        validation_level = self._audio_validation_level(audio)
-        audio = self._normalize_recorded_audio(audio)
-        audio = np.clip(audio, -1.0, 1.0)
-        pcm = (audio * 32767).astype(np.int16)
-        with wave.open(str(output_path), "wb") as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            wav_file.writeframes(pcm.tobytes())
-        return validation_level
-
     @staticmethod
     def _best_mono_audio(audio: np.ndarray) -> np.ndarray:
         if audio.ndim <= 1:

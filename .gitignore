@@ -1,55 +1,36 @@
-```
-# Python
+```gitignore
+# Compiled and build artifacts
+*.pyc
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+*.o
+*.obj
+*.out
 
-# Virtual environments
-venv/
-ENV/
-env.bak/
+# Dependencies
 .venv/
+venv/
+node_modules/
 
-# Environment variables
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Environment
 .env
 .env.local
 *.env.*
 
-# Testing
+# Editors
+.vscode/
+.idea/
+
+# Coverage
 .coverage
 coverage/
 htmlcov/
-.nosetests
-.unit_test_results/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
-
-# Logs
-*.log
-
-# OS
-.DS_Store
-Thumbs.db
+# Python cache
+.mypy_cache/
+.pytest_cache/
 ```
