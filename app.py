@@ -38,10 +38,14 @@ except ImportError:
     KModel = None
     KPipeline = None
 
-# Sistema de clonagem de voz por referência (similar ao Qwen)
-# Usa API externa para TTS com voice cloning
-OPENAI_TTS_URL = "https://api.openai.com/v1/audio/speech"
-ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
+# Sistema de clonagem de voz local com XTTS v2 (Coqui TTS)
+# Não requer APIs - roda 100% localmente
+XTTS_AVAILABLE = False
+try:
+    from TTS.api import TTS
+    XTTS_AVAILABLE = True
+except ImportError:
+    TTS = None
 
 APP_TITLE = "VideoGenerator"
 CONFIG_FILE = Path.home() / ".videogenerator_config.json"
@@ -135,13 +139,12 @@ class VideoGeneratorApp:
         self.qwen_read_y = StringVar(value="0")
         self.qwen_record_extra = StringVar(value="2")
         
-        # Sistema de TTS com clonagem de voz por referência (similar ao Qwen)
-        self.tts_provider = StringVar(value="kokoro")  # kokoro, openai, elevenlabs
+        # Sistema de TTS com clonagem de voz por referência (XTTS v2 - Local)
+        self.tts_provider = StringVar(value="xtts")  # xtts (local), kokoro (local)
         self.tts_language = StringVar(value="pt-br")
         self.tts_voice_ref_path = StringVar(value="")
-        self.tts_api_key = StringVar(value="")
-        self.tts_elevenlabs_voice_id = StringVar(value="")
         self.tts_model_loaded = False
+        self.xtts_model: TTS | None = None
         self.kokoro_pipeline: KPipeline | None = None
         
         self.music_path = StringVar(value="")
@@ -722,19 +725,11 @@ class VideoGeneratorApp:
         provider_row.pack(fill=X, pady=(6, 6))
         Label(provider_row, text="Provedor:", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold"), width=15, anchor="w").pack(side=LEFT)
         provider_combo = ttk.Combobox(provider_row, textvariable=self.tts_provider, values=[
-            "kokoro (Local - Grátis)",
-            "openai (API - Clonagem)",
-            "elevenlabs (API - Melhor qualidade)"
+            "xtts (Local - Clonagem por referência)",
+            "kokoro (Local - Vozes pré-treinadas)"
         ], state="readonly", width=30, font=("Segoe UI", 9))
         provider_combo.pack(side=LEFT, ipady=4)
-        Label(provider_row, text="Selecione o provedor de TTS.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(side=LEFT, padx=(10, 0))
-        
-        # API Key (para OpenAI e ElevenLabs)
-        api_key_row = Frame(tts_card, bg="#f8f9fd")
-        api_key_row.pack(fill=X, pady=(6, 6))
-        Label(api_key_row, text="API Key:", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold"), width=15, anchor="w").pack(side=LEFT)
-        Entry(api_key_row, textvariable=self.tts_api_key, bd=0, bg="#e8eaef", fg="#111827", insertbackground="#111827", font=("Segoe UI", 9), show="*").pack(side=LEFT, fill=X, expand=True, ipady=8)
-        Label(tts_card, text="Necessário para OpenAI ou ElevenLabs. Kokoro não precisa.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(anchor="w", pady=(0, 6))
+        Label(provider_row, text="XTTS clona voz com áudio de referência.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(side=LEFT, padx=(10, 0))
         
         # Idioma
         lang_row = Frame(tts_card, bg="#f8f9fd")
@@ -750,7 +745,7 @@ class VideoGeneratorApp:
         ref_row.pack(fill=X, pady=(6, 6))
         Entry(ref_row, textvariable=self.tts_voice_ref_path, bd=0, bg="#e8eaef", fg="#111827", insertbackground="#111827", font=("Segoe UI", 9)).pack(side=LEFT, fill=X, expand=True, ipady=8)
         Button(ref_row, text="Selecionar áudio", command=self._choose_voice_ref_file, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=8, font=("Segoe UI", 9)).pack(side=RIGHT, padx=(10, 0))
-        Label(tts_card, text="Para clonar uma voz, selecione um áudio de referência (WAV/MP3, 10-60s). Funciona com OpenAI e ElevenLabs.", bg="#f8f9fd", fg="#059669", font=("Segoe UI", 8)).pack(anchor="w", pady=(6, 0))
+        Label(tts_card, text="Para XTTS: selecione um áudio de referência (WAV/MP3, 10-60s) para clonar a voz. Kokoro não precisa.", bg="#f8f9fd", fg="#059669", font=("Segoe UI", 8)).pack(anchor="w", pady=(6, 0))
         
         # Seleção de voz (apenas para Kokoro)
         self.voice_selection_frame = Frame(tts_card, bg="#f8f9fd")
@@ -768,7 +763,14 @@ class VideoGeneratorApp:
             "am_michael (Masculino Americano)"
         ], state="readonly", width=35, font=("Segoe UI", 9))
         voice_combo.pack(side=LEFT, ipady=4)
-        Label(self.voice_selection_frame, text="Selecione a voz para narração (apenas Kokoro). APIs usam áudio de referência.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(anchor="w", pady=(6, 0))
+        Label(self.voice_selection_frame, text="Selecione a voz para narração (apenas Kokoro). XTTS usa áudio de referência.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(anchor="w", pady=(6, 0))
+        
+        # Botão para carregar modelo
+        load_btn_frame = Frame(tts_card, bg="#f8f9fd")
+        load_btn_frame.pack(fill=X, pady=(12, 6))
+        Button(load_btn_frame, text="Carregar Modelo XTTS", command=self._load_xtts_model, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=8, font=("Segoe UI", 9)).pack(side=LEFT, padx=(0, 10))
+        Button(load_btn_frame, text="Carregar Modelo Kokoro", command=self._load_kokoro_model, bg="#e0e7ff", fg="#4338ca", activebackground="#c7d2fe", activeforeground="#3730a3", relief="flat", padx=14, pady=8, font=("Segoe UI", 9)).pack(side=LEFT)
+        Label(tts_card, text="XTTS: carrega modelo de clonagem. Kokoro: carrega vozes pré-treinadas.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(anchor="w", pady=(6, 0))
         
         # Status
         status_frame = Frame(tts_card, bg="#f8f9fd")
@@ -856,6 +858,35 @@ class VideoGeneratorApp:
             self.tts_voice_ref_path.set(file_path)
             self._save_config()
 
+    def _load_xtts_model(self) -> None:
+        """Carrega o modelo XTTS v2 para clonagem de voz local."""
+        if not XTTS_AVAILABLE:
+            messagebox.showerror(APP_TITLE, "XTTS (Coqui TTS) não está instalado. Instale com: pip install TTS")
+            return
+        
+        try:
+            self.status_text.set("Carregando modelo XTTS v2...")
+            self.root.update()
+            
+            # Carrega o modelo XTTS v2
+            self.xtts_model = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
+            
+            self.tts_model_loaded = True
+            self.tts_status_label.configure(text="XTTS v2: Carregado e pronto", fg="#059669")
+        except MemoryError:
+            self.tts_status_label.configure(text="Erro: Memória insuficiente", fg="#dc2626")
+            self.status_text.set("Erro: XTTS requer mais memória RAM")
+            messagebox.showerror(APP_TITLE, 
+                "Memória insuficiente para carregar o XTTS.\n\n"
+                "Soluções:\n"
+                "1. Feche outros programas para liberar memória\n"
+                "2. Use um sistema com pelo menos 8GB de RAM livre\n"
+                "3. Considere usar GPU se disponível")
+        except Exception as e:
+            self.tts_status_label.configure(text=f"Erro ao carregar modelo: {e}", fg="#dc2626")
+            self.status_text.set(f"Erro: {e}")
+            messagebox.showerror(APP_TITLE, f"Erro ao carregar modelo XTTS:\n{e}")
+
     def _load_kokoro_model(self) -> None:
         """Carrega o modelo Kokoro para TTS."""
         if not KOKORO_AVAILABLE:
@@ -880,8 +911,7 @@ class VideoGeneratorApp:
             }
             lang_code = lang_mapping.get(self.tts_language.get().lower(), "p")
             # KPipeline já carrega o modelo internamente quando model=True (padrão)
-            self.kokoro_pipeline = KPipeline(lang_code=lang_code, model=False)  # Carrega sem modelo para economizar memória
-            # O modelo será carregado sob demanda se necessário
+            self.kokoro_pipeline = KPipeline(lang_code=lang_code, model=False)
             
             self.tts_model_loaded = True
             self.tts_status_label.configure(text="Modelo Kokoro: Carregado e pronto", fg="#059669")
@@ -905,19 +935,25 @@ class VideoGeneratorApp:
             messagebox.showerror(APP_TITLE, "Nenhuma frase no roteiro. Gere um roteiro primeiro.")
             return
         
-        provider = self.tts_provider.get().split()[0].lower()  # Extrai apenas o nome do provedor
+        provider = self.tts_provider.get().split()[0].lower()
         
         # Validações por provedor
-        if provider == "kokoro":
+        if provider == "xtts":
+            if not XTTS_AVAILABLE:
+                messagebox.showerror(APP_TITLE, "XTTS não está instalado. Instale com: pip install TTS")
+                return
+            if not self.tts_model_loaded:
+                messagebox.showwarning(APP_TITLE, "Modelo XTTS não carregado.\nClique em Carregar Modelo XTTS antes de gerar os áudios.")
+                return
+            if not self.tts_voice_ref_path.get().strip():
+                messagebox.showerror(APP_TITLE, "Selecione um áudio de referência para clonar a voz.")
+                return
+        elif provider == "kokoro":
             if not KOKORO_AVAILABLE:
                 messagebox.showerror(APP_TITLE, "Kokoro não está instalado. Instale com: pip install kokoro")
                 return
             if not self.tts_model_loaded:
                 messagebox.showwarning(APP_TITLE, "Modelo Kokoro não carregado.\nClique em Carregar Modelo Kokoro antes de gerar os áudios.")
-                return
-        elif provider in ["openai", "elevenlabs"]:
-            if not self.tts_api_key.get().strip():
-                messagebox.showerror(APP_TITLE, f"Informe a API Key para {provider.title()}.")
                 return
         
         # Cria diretório de mídia
@@ -933,20 +969,6 @@ class VideoGeneratorApp:
         try:
             provider = self.tts_provider.get().split()[0].lower()
             
-            # Mapeia o código de idioma
-            lang_mapping = {
-                "pt-br": "p",
-                "en-us": "a",
-                "en-gb": "b",
-                "es": "e",
-                "fr": "f",
-                "hi": "h",
-                "it": "i",
-                "ja": "j",
-                "zh": "z"
-            }
-            lang_code = lang_mapping.get(self.tts_language.get().lower(), "p")
-            
             self.message_queue.put(("status", f"Inicializando TTS com {provider}..."))
             
             # Gera áudio baseado no provedor
@@ -956,12 +978,12 @@ class VideoGeneratorApp:
                 audio_path = CLIPBOARD_MEDIA_DIR / f"audio_{index:03d}.wav"
                 
                 try:
-                    if provider == "kokoro":
+                    if provider == "xtts":
+                        self._generate_xtts_audio(line.text, audio_path)
+                    elif provider == "kokoro":
+                        lang_mapping = {"pt-br": "p", "en-us": "a", "en-gb": "b"}
+                        lang_code = lang_mapping.get(self.tts_language.get().lower(), "p")
                         self._generate_kokoro_audio(line.text, audio_path, lang_code)
-                    elif provider == "openai":
-                        self._generate_openai_audio(line.text, audio_path)
-                    elif provider == "elevenlabs":
-                        self._generate_elevenlabs_audio(line.text, audio_path)
                     
                     self.message_queue.put(("progress", str(index)))
                 except Exception as e:
@@ -972,6 +994,25 @@ class VideoGeneratorApp:
             
         except Exception as e:
             self.message_queue.put(("error", f"Erro ao gerar áudios: {e}"))
+    
+    def _generate_xtts_audio(self, text: str, output_path: Path) -> None:
+        """Gera áudio usando XTTS v2 com clonagem de voz por referência."""
+        if not self.xtts_model:
+            raise RuntimeError("Modelo XTTS não carregado.")
+        
+        voice_ref = self.tts_voice_ref_path.get().strip()
+        if not voice_ref:
+            raise RuntimeError("Áudio de referência não selecionado.")
+        
+        language = self.tts_language.get().lower()
+        
+        # Gera áudio com clonagem de voz
+        self.xtts_model.tts_to_file(
+            text=text,
+            speaker_wav=voice_ref,
+            language=language,
+            file_path=str(output_path)
+        )
     
     def _generate_kokoro_audio(self, text: str, output_path: Path, lang_code: str) -> None:
         """Gera áudio usando Kokoro TTS localmente."""
@@ -1005,68 +1046,6 @@ class VideoGeneratorApp:
                 
                 audio_data = (audio_tensor * 32767).to(torch.int16).numpy()
                 wf.writeframes(audio_data.tobytes())
-    
-    def _generate_openai_audio(self, text: str, output_path: Path) -> None:
-        """Gera áudio usando OpenAI TTS API com clonagem de voz por referência."""
-        api_key = self.tts_api_key.get().strip()
-        voice_ref = self.tts_voice_ref_path.get().strip()
-        
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        # Se tiver áudio de referência, usa custom voice (simplificado)
-        # Nota: OpenAI não suporta voice cloning direto, mas usa voices pré-treinadas
-        voice = "alloy"  # Voice padrão
-        
-        payload = {
-            "model": "tts-1-hd",
-            "input": text,
-            "voice": voice,
-            "response_format": "wav"
-        }
-        
-        response = requests.post(OPENAI_TTS_URL, headers=headers, json=payload, timeout=60)
-        response.raise_for_status()
-        
-        with open(output_path, "wb") as f:
-            f.write(response.content)
-    
-    def _generate_elevenlabs_audio(self, text: str, output_path: Path) -> None:
-        """Gera áudio usando ElevenLabs TTS API com clonagem de voz."""
-        api_key = self.tts_api_key.get().strip()
-        voice_ref = self.tts_voice_ref_path.get().strip()
-        
-        headers = {
-            "xi-api-key": api_key,
-            "Content-Type": "application/json"
-        }
-        
-        # Usa voice ID configurado ou padrão
-        voice_id = self.tts_elevenlabs_voice_id.get().strip() or "EXAVITQu4vr4xnSDxMaL"  # Sarah
-        
-        url = f"{ELEVENLABS_TTS_URL}/{voice_id}"
-        
-        payload = {
-            "text": text,
-            "model_id": "eleven_multilingual_v2",
-            "voice_settings": {
-                "stability": 0.5,
-                "similarity_boost": 0.75
-            }
-        }
-        
-        # Se tiver áudio de referência, faz upload e cria voice clone (simplificado)
-        if voice_ref and Path(voice_ref).exists():
-            # Em produção, aqui faria upload do áudio para ElevenLabs
-            self.message_queue.put(("status", "Usando voice clone com áudio de referência"))
-        
-        response = requests.post(url, headers=headers, json=payload, timeout=60)
-        response.raise_for_status()
-        
-        with open(output_path, "wb") as f:
-            f.write(response.content)
 
     def _build_music_tab(self, parent: Frame) -> None:
         top = Frame(parent, bg="#ffffff")
@@ -1728,12 +1707,21 @@ class VideoGeneratorApp:
         """Gera áudio usando o provedor TTS configurado."""
         provider = self.tts_provider.get().split()[0].lower()
         
-        if provider == "kokoro":
+        if provider == "xtts":
+            if not self.xtts_model:
+                raise RuntimeError("Modelo XTTS não carregado. Carregue o modelo na aba Audio primeiro.")
+            voice_ref = self.tts_voice_ref_path.get().strip()
+            if not voice_ref:
+                raise RuntimeError("Áudio de referência não selecionado.")
+            language = self.tts_language.get().lower()
+            self.xtts_model.tts_to_file(
+                text=text,
+                speaker_wav=voice_ref,
+                language=language,
+                file_path=str(output_path)
+            )
+        elif provider == "kokoro":
             self._generate_kokoro_tts(text, output_path)
-        elif provider == "openai":
-            self._generate_openai_audio(text, output_path)
-        elif provider == "elevenlabs":
-            self._generate_elevenlabs_audio(text, output_path)
         else:
             raise RuntimeError(f"Provedor TTS desconhecido: {provider}")
     
