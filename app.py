@@ -719,12 +719,28 @@ class VideoGeneratorApp:
         Label(lang_row, text="Selecione o idioma para geração dos áudios.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(side=LEFT, padx=(10, 0))
         
         # Áudio de referência
-        Label(tts_card, text="Áudio de referência para clonagem de voz", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(12, 6))
+        Label(tts_card, text="Áudio de referência (não disponível na versão atual)", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(12, 6))
         ref_row = Frame(tts_card, bg="#f8f9fd")
         ref_row.pack(fill=X, pady=(6, 6))
-        Entry(ref_row, textvariable=self.tts_voice_ref_path, bd=0, bg="#ffffff", fg="#111827", insertbackground="#111827", font=("Segoe UI", 9)).pack(side=LEFT, fill=X, expand=True, ipady=8)
-        Button(ref_row, text="Selecionar áudio", command=self._choose_voice_ref_file, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=8, font=("Segoe UI", 9, "bold")).pack(side=RIGHT, padx=(10, 0))
-        Label(tts_card, text="Selecione um arquivo de áudio (.wav, .mp3) com sua voz para clonagem. Opcional - se não selecionar, usará voz padrão.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(anchor="w", pady=(6, 0))
+        Entry(ref_row, textvariable=self.tts_voice_ref_path, bd=0, bg="#e8eaef", fg="#657084", insertbackground="#111827", font=("Segoe UI", 9), state="disabled").pack(side=LEFT, fill=X, expand=True, ipady=8)
+        Button(ref_row, text="Selecionar áudio", command=self._choose_voice_ref_file, bg="#e8eaef", fg="#657084", relief="flat", padx=14, pady=8, font=("Segoe UI", 9), state="disabled").pack(side=RIGHT, padx=(10, 0))
+        Label(tts_card, text="A clonagem de voz por áudio de referência será implementada em uma versão futura. Atualmente, apenas vozes pré-treinadas do Kokoro estão disponíveis.", bg="#f8f9fd", fg="#dc2626", font=("Segoe UI", 8)).pack(anchor="w", pady=(6, 0))
+        
+        # Seleção de voz
+        Label(tts_card, text="Voz do narrador", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(12, 6))
+        voice_row = Frame(tts_card, bg="#f8f9fd")
+        voice_row.pack(fill=X, pady=(6, 6))
+        self.tts_voice_name = StringVar(value="af_heart")
+        voice_combo = ttk.Combobox(voice_row, textvariable=self.tts_voice_name, values=[
+            "af_heart (Feminina Americana - Principal)",
+            "af_bella (Feminina Americana)",
+            "af_nicole (Feminina Americana)",
+            "af_sarah (Feminina Americana)",
+            "am_adam (Masculino Americano)",
+            "am_michael (Masculino Americano)"
+        ], state="readonly", width=35, font=("Segoe UI", 9))
+        voice_combo.pack(side=LEFT, ipady=4)
+        Label(tts_card, text="Selecione a voz para narração. Mais vozes serão adicionadas futuramente.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(anchor="w", pady=(6, 0))
         
         # Status do modelo
         status_frame = Frame(tts_card, bg="#f8f9fd")
@@ -910,24 +926,14 @@ class VideoGeneratorApp:
             # Tenta carregar o modelo com menos memória
             try:
                 model = KModel()
-                # Se tiver áudio de referência, usa para carregar a voz
-                voice_name = "af_heart"  # Voz padrão
+                # Extrai apenas o nome da voz (sem a descrição)
+                voice_full = self.tts_voice_name.get().strip()
+                voice_name = voice_full.split()[0] if voice_full else "af_heart"
                 
+                # Nota: A versão atual do Kokoro (0.9.4) não suporta clonagem de voz
+                # a partir de áudio de referência. Apenas vozes pré-treinadas (.pt) são suportadas.
                 if self.tts_voice_ref_path.get().strip():
-                    ref_path = Path(self.tts_voice_ref_path.get().strip())
-                    if ref_path.exists():
-                        try:
-                            import torchaudio
-                            waveform, sample_rate = torchaudio.load(str(ref_path))
-                            if sample_rate != 24000:
-                                transform = torchaudio.transforms.Resample(sample_rate, 24000)
-                                waveform = transform(waveform)
-                            # Salva como referência temporária
-                            temp_ref = CLIPBOARD_MEDIA_DIR / "voice_ref.wav"
-                            torchaudio.save(str(temp_ref), waveform, 24000)
-                            self.message_queue.put(("status", f"Voz de referência carregada: {ref_path.name}"))
-                        except Exception as e:
-                            self.message_queue.put(("status", f"Aviso: Não foi possível usar áudio de referência ({e})"))
+                    self.message_queue.put(("status", "Aviso: Clonagem por áudio não disponível nesta versão do Kokoro. Usando voz padrão."))
                 
                 # Cria novo pipeline com modelo
                 pipeline = KPipeline(lang_code=lang_code, model=model)
@@ -956,10 +962,15 @@ class VideoGeneratorApp:
                         
                         for chunk in generator:
                             # Converte float32 para int16
-                            if hasattr(chunk, 'numpy'):
-                                audio_data = (chunk.numpy() * 32767).astype(np.int16)
+                            # Na nova versao do Kokoro, chunk é um objeto Result com propriedade audio
+                            if hasattr(chunk, 'audio') and chunk.audio is not None:
+                                audio_tensor = chunk.audio
+                            elif hasattr(chunk, 'numpy'):
+                                audio_tensor = chunk
                             else:
-                                audio_data = (torch.from_numpy(chunk) * 32767).to(torch.int16).numpy()
+                                audio_tensor = torch.from_numpy(chunk)
+                            
+                            audio_data = (audio_tensor * 32767).to(torch.int16).numpy()
                             wf.writeframes(audio_data.tobytes())
                     
                     self.message_queue.put(("progress", str(index)))
@@ -1653,25 +1664,14 @@ class VideoGeneratorApp:
             
             # Carrega o modelo
             model = KModel()
-            voice_name = "af_heart"  # Voz padrão
+            # Extrai apenas o nome da voz (sem a descrição)
+            voice_full = self.tts_voice_name.get().strip()
+            voice_name = voice_full.split()[0] if voice_full else "af_heart"
             
-            # Se tiver áudio de referência, usa para carregar a voz
+            # Nota: A versão atual do Kokoro (0.9.4) não suporta clonagem de voz
+            # a partir de áudio de referência. Apenas vozes pré-treinadas (.pt) são suportadas.
             if self.tts_voice_ref_path.get().strip():
-                ref_path = Path(self.tts_voice_ref_path.get().strip())
-                if ref_path.exists():
-                    try:
-                        import torchaudio
-                        waveform, sample_rate = torchaudio.load(str(ref_path))
-                        if sample_rate != 24000:
-                            transform = torchaudio.transforms.Resample(sample_rate, 24000)
-                            waveform = transform(waveform)
-                        # Salva como referência temporária
-                        temp_ref = CLIPBOARD_MEDIA_DIR / "voice_ref.wav"
-                        CLIPBOARD_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-                        torchaudio.save(str(temp_ref), waveform, 24000)
-                        self._queue_status(f"Usando voz de referência: {ref_path.name}", step=True)
-                    except Exception as e:
-                        self._queue_status(f"Aviso: Não foi possível usar áudio de referência ({e})", step=True)
+                self._queue_status("Aviso: Clonagem por áudio não disponível nesta versão do Kokoro.", step=True)
             
             # Cria pipeline com modelo
             pipeline = KPipeline(lang_code=lang_code, model=model)
@@ -1687,10 +1687,15 @@ class VideoGeneratorApp:
                 
                 for chunk in generator:
                     # Converte float32 para int16
-                    if hasattr(chunk, 'numpy'):
-                        audio_data = (chunk.numpy() * 32767).astype(np.int16)
+                    # Na nova versao do Kokoro, chunk é um objeto Result com propriedade audio
+                    if hasattr(chunk, 'audio') and chunk.audio is not None:
+                        audio_tensor = chunk.audio
+                    elif hasattr(chunk, 'numpy'):
+                        audio_tensor = chunk
                     else:
-                        audio_data = (torch.from_numpy(chunk) * 32767).to(torch.int16).numpy()
+                        audio_tensor = torch.from_numpy(chunk)
+                    
+                    audio_data = (audio_tensor * 32767).to(torch.int16).numpy()
                     wf.writeframes(audio_data.tobytes())
             
             self._queue_status(f"Áudio gerado: {text[:50]}...", step=True)
