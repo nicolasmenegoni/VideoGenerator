@@ -11,3 +11,4 @@ sounddevice>=0.2.0
 scipy>=1.11.0
 torch>=2.0.0
 torchaudio>=2.0.0
+transformers==4.37.2
