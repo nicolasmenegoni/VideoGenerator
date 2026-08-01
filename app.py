@@ -139,7 +139,7 @@ class VideoGeneratorApp:
         self.media_preview_failed: set[str] = set()
         self.logo_preview_image: ImageTk.PhotoImage | None = None
         self.script_text_value = DEFAULT_SCRIPT_TEXT
-        self.script_prompt_value = StringVar(value="")
+        self.script_prompt_value = StringVar(value="Crie um roteiro curto para um vídeo vertical em português do Brasil com base no título informado. O roteiro deve ter de 6 a 10 frases curtas, naturais para narração em voz alta, com gancho no começo e fechamento no final. Cada frase deve funcionar como uma cena separada do vídeo. Não use numeração, marcadores, emojis, markdown, aspas, chaves, colchetes ou título dentro das frases. Responda somente com as frases finais, uma por linha, sem JSON e sem texto extra.")
         self.lines: list[ScriptLine] = []
         self.used_media_urls: set[str] = set()
         self.message_queue: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -259,8 +259,12 @@ class VideoGeneratorApp:
         Label(parent, text="Titulo", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         Entry(parent, textvariable=self.video_title, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 12)).pack(fill=X, ipady=10, pady=(6, 14))
 
-        Label(parent, text="Prompt para o roteiro (opcional)", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        Entry(parent, textvariable=self.script_prompt_value, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 12)).pack(fill=X, ipady=10, pady=(6, 14))
+        Label(parent, text="Prompt para o roteiro", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        prompt_frame = Frame(parent, bg="#ffffff")
+        prompt_frame.pack(fill=X, pady=(6, 14))
+        self.script_prompt_text = Text(prompt_frame, height=4, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=12, pady=10)
+        self.script_prompt_text.pack(fill=X)
+        self.script_prompt_text.insert("1.0", self.script_prompt_value.get())
 
         actions = Frame(parent, bg="#ffffff", pady=12)
         actions.pack(fill=X)
@@ -284,7 +288,7 @@ class VideoGeneratorApp:
         self.progress.configure(value=0, maximum=1)
         self.progress_text.set("Gerando roteiro...")
         self.status_text.set("Gerando roteiro com Groq...")
-        prompt = self.script_prompt_value.get().strip()
+        prompt = self.script_prompt_text.get("1.0", END).strip()
         threading.Thread(target=self._generate_script_worker, args=(title, prompt), daemon=True).start()
 
     def _generate_script_worker(self, title: str, prompt: str = "") -> None:
@@ -303,20 +307,13 @@ class VideoGeneratorApp:
         self.progress.configure(value=1)
 
     def _groq_script_lines(self, title: str, prompt: str = "") -> list[str]:
-        base_prompt = (
-            "Crie um roteiro curto para um vídeo vertical em português do Brasil com base no título informado. "
-            "O roteiro deve ter de 6 a 10 frases curtas, naturais para narração em voz alta, com gancho no começo e fechamento no final. "
-            "Cada frase deve funcionar como uma cena separada do vídeo. "
-            "Não use numeração, marcadores, emojis, markdown, aspas, chaves, colchetes ou título dentro das frases. "
-            "Responda somente com as frases finais, uma por linha, sem JSON e sem texto extra.\n\n"
-            f"Título: {title}"
-        )
-        if prompt:
-            base_prompt = f"{prompt}\n\n{base_prompt}"
+        if not prompt.strip():
+            prompt = "Crie um roteiro curto para um vídeo vertical em português do Brasil com base no título informado. O roteiro deve ter de 6 a 10 frases curtas, naturais para narração em voz alta, com gancho no começo e fechamento no final. Cada frase deve funcionar como uma cena separada do vídeo. Não use numeração, marcadores, emojis, markdown, aspas, chaves, colchetes ou título dentro das frases. Responda somente com as frases finais, uma por linha, sem JSON e sem texto extra."
+        full_prompt = f"{prompt}\n\nTítulo: {title}"
         content = self._groq_chat_content(
             messages=[
                 {"role": "system", "content": "Você cria roteiros curtos para vídeos verticais em português do Brasil."},
-                {"role": "user", "content": base_prompt},
+                {"role": "user", "content": full_prompt},
             ],
             temperature=0.7,
             max_tokens=900,
@@ -1070,6 +1067,10 @@ class VideoGeneratorApp:
                 self.logo_size.set(data.get("logo_size", self.logo_size.get()))
                 self.logo_text.set(data.get("logo_text", self.logo_text.get()))
                 self.tts_voice_ref_path.set(data.get("tts_voice_ref_path", self.tts_voice_ref_path.get()))
+                saved_prompt = data.get("script_prompt", "")
+                if saved_prompt:
+                    self.script_prompt_text.delete("1.0", END)
+                    self.script_prompt_text.insert("1.0", saved_prompt)
             except json.JSONDecodeError:
                 pass
 
@@ -1080,7 +1081,7 @@ class VideoGeneratorApp:
             "groq_key": self.groq_key.get().strip(),
             "video_title": self.video_title.get().strip(),
             "script_text": self.script_text_value,
-            "script_prompt": self.script_prompt_value.get().strip(),
+            "script_prompt": self.script_prompt_text.get("1.0", END).strip(),
             "script_lines": self._config_script_lines(),
             "output_dir": self.output_dir.get().strip(),
             "video_extra_after_audio": self.video_extra_after_audio.get().strip(),
