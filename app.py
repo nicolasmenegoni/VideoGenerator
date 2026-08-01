@@ -969,7 +969,7 @@ class VideoGeneratorApp:
             if not KOKORO_AVAILABLE:
                 messagebox.showerror(APP_TITLE, "Kokoro não está instalado. Instale com: pip install kokoro")
                 return
-            if not self.tts_model_loaded or self.tts_engine.get() != "kokoro":
+            if not self.tts_model_loaded:
                 messagebox.showwarning(APP_TITLE, "Modelo Kokoro não carregado.\nClique em Carregar Kokoro antes de gerar os áudios.")
                 return
         elif engine == "xtts":
