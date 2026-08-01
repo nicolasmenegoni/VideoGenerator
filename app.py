@@ -262,8 +262,11 @@ class VideoGeneratorApp:
         Label(parent, text="Prompt para o roteiro", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         prompt_frame = Frame(parent, bg="#ffffff")
         prompt_frame.pack(fill=X, pady=(6, 14))
-        self.script_prompt_text = Text(prompt_frame, height=4, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=12, pady=10)
-        self.script_prompt_text.pack(fill=X)
+        self.script_prompt_text = Text(prompt_frame, height=6, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=12, pady=10)
+        prompt_scrollbar = ttk.Scrollbar(prompt_frame, orient="vertical", command=self.script_prompt_text.yview)
+        self.script_prompt_text.configure(yscrollcommand=prompt_scrollbar.set)
+        self.script_prompt_text.pack(side=LEFT, fill=BOTH, expand=True)
+        prompt_scrollbar.pack(side=RIGHT, fill=Y)
         default_prompt = getattr(self, "_saved_script_prompt", None) or self.script_prompt_value.get()
         self.script_prompt_text.insert("1.0", default_prompt)
 
@@ -272,8 +275,13 @@ class VideoGeneratorApp:
         Button(actions, text="Atualizar roteiro", command=self._refresh_lines, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
         Button(actions, text="Gerar roteiro", command=self._start_script_generation, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
 
-        self.script_text = Text(parent, height=12, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
-        self.script_text.pack(fill=BOTH, expand=True)
+        script_frame = Frame(parent, bg="#ffffff")
+        script_frame.pack(fill=BOTH, expand=True)
+        self.script_text = Text(script_frame, height=16, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
+        script_scrollbar = ttk.Scrollbar(script_frame, orient="vertical", command=self.script_text.yview)
+        self.script_text.configure(yscrollcommand=script_scrollbar.set)
+        self.script_text.pack(side=LEFT, fill=BOTH, expand=True)
+        script_scrollbar.pack(side=RIGHT, fill=Y)
         self.script_text.insert("1.0", self.script_text_value)
 
     def _start_script_generation(self) -> None:
