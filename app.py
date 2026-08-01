@@ -122,11 +122,9 @@ class VideoGeneratorApp:
         self.qwen_read_y = StringVar(value="0")
         self.qwen_record_extra = StringVar(value="2")
         
-        # Novas variáveis para TTS local com XTTS
+        # Variáveis para TTS local com XTTS
         self.tts_language = StringVar(value="pt-br")
         self.tts_voice_ref_path = StringVar(value="")
-        self.tts_model_loaded = False
-        self.tts_engine = StringVar(value="xtts")  # xtts
         self.xtts_model = None
         
         self.music_path = StringVar(value="")
@@ -702,26 +700,6 @@ class VideoGeneratorApp:
         tts_card.pack(fill=X, pady=(0, 12))
         Label(tts_card, text="Configurações de TTS Local", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
         
-        # Seleção do motor TTS
-        engine_row = Frame(tts_card, bg="#f8f9fd")
-        engine_row.pack(fill=X, pady=(6, 6))
-        Label(engine_row, text="Motor TTS:", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold"), width=15, anchor="w").pack(side=LEFT)
-        engine_combo = ttk.Combobox(engine_row, textvariable=self.tts_engine, values=[
-            "xtts (Clonagem de voz)"
-        ], state="readonly", width=25, font=("Segoe UI", 9))
-        engine_combo.pack(side=LEFT, ipady=4)
-        Label(engine_row, text="Selecione o motor de síntese de voz.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(side=LEFT, padx=(10, 0))
-        
-        # Adiciona callback para atualizar o status quando mudar o engine
-        def on_engine_change(event=None):
-            engine = self.tts_engine.get().split()[0].lower()
-            if engine == "xtts" and self.xtts_model is not None:
-                self.tts_status_label.configure(text="XTTS: Carregado e pronto", fg="#059669")
-            else:
-                self.tts_status_label.configure(text=f"{engine.upper()}: Não carregado", fg="#dc2626")
-        
-        engine_combo.bind("<<ComboboxSelected>>", on_engine_change)
-        
         # Idioma
         lang_row = Frame(tts_card, bg="#f8f9fd")
         lang_row.pack(fill=X, pady=(6, 6))
@@ -741,12 +719,8 @@ class VideoGeneratorApp:
         # Status do modelo
         status_frame = Frame(tts_card, bg="#f8f9fd")
         status_frame.pack(fill=X, pady=(12, 0))
-        self.tts_status_label = Label(status_frame, text="Modelo: Não carregado", bg="#f8f9fd", fg="#dc2626", font=("Segoe UI", 9))
+        self.tts_status_label = Label(status_frame, text="XTTS: Não carregado", bg="#f8f9fd", fg="#dc2626", font=("Segoe UI", 9))
         self.tts_status_label.pack(anchor="w")
-        if self.xtts_model is not None:
-            self.tts_status_label.configure(text="XTTS: Carregado e pronto", fg="#059669")
-        else:
-            self.tts_status_label.configure(text="XTTS: pip install TTS", fg="#dc2626")
         
         # Botões para carregar modelos
         btn_frame = Frame(tts_card, bg="#f8f9fd")
@@ -856,8 +830,6 @@ class VideoGeneratorApp:
                 "cuda" if use_cuda else "cpu"
             )
             
-            self.tts_model_loaded = True
-            self.tts_engine.set("xtts")
             self.tts_status_label.configure(
                 text=f"XTTS: Carregado {'(GPU)' if use_cuda else '(CPU)'}", 
                 fg="#059669"
@@ -875,8 +847,7 @@ class VideoGeneratorApp:
                 "Memória insuficiente para carregar o XTTS.\n\n"
                 "Soluções:\n"
                 "1. Feche outros programas para liberar memória\n"
-                "2. Use uma GPU com mais VRAM (mínimo 4GB recomendado)\n"
-                "3. Considere usar Kokoro como alternativa")
+                "2. Use uma GPU com mais VRAM (mínimo 4GB recomendado)")
         except Exception as e:
             self.tts_status_label.configure(text=f"Erro ao carregar XTTS: {e}", fg="#dc2626")
             self.status_text.set(f"Erro: {e}")
@@ -888,26 +859,13 @@ class VideoGeneratorApp:
             messagebox.showerror(APP_TITLE, "Nenhuma frase no roteiro. Gere um roteiro primeiro.")
             return
         
-        # Verifica qual engine está selecionada
-        engine = self.tts_engine.get().split()[0].lower()  # extrai "kokoro" ou "xtts"
-        
-        if engine == "kokoro":
-            if not KOKORO_AVAILABLE:
-                messagebox.showerror(APP_TITLE, "Kokoro não está instalado. Instale com: pip install kokoro")
-                return
-            if not self.tts_model_loaded:
-                messagebox.showwarning(APP_TITLE, "Modelo Kokoro não carregado.\nClique em Carregar Kokoro antes de gerar os áudios.")
-                return
-        elif engine == "xtts":
-            if self.xtts_model is None:
-                messagebox.showwarning(APP_TITLE, "Modelo XTTS não carregado.\nClique em Carregar XTTS antes de gerar os áudios.")
-                return
-            # Verifica se há áudio de referência para XTTS
-            if not self.tts_voice_ref_path.get().strip():
-                messagebox.showwarning(APP_TITLE, "XTTS requer um áudio de referência.\nSelecione um arquivo de áudio (3-10 segundos) na aba Audio antes de gerar.")
-                return
-        else:
-            messagebox.showerror(APP_TITLE, "Motor TTS não selecionado corretamente.")
+        # Usa apenas XTTS
+        if self.xtts_model is None:
+            messagebox.showwarning(APP_TITLE, "Modelo XTTS não carregado.\nClique em Carregar XTTS antes de gerar os áudios.")
+            return
+        # Verifica se há áudio de referência para XTTS
+        if not self.tts_voice_ref_path.get().strip():
+            messagebox.showwarning(APP_TITLE, "XTTS requer um áudio de referência.\nSelecione um arquivo de áudio (3-10 segundos) na aba Audio antes de gerar.")
             return
         
         # Cria diretório de mídia
@@ -921,14 +879,8 @@ class VideoGeneratorApp:
     def _generate_all_audios_worker(self) -> None:
         """Worker para gerar todos os áudios em thread separada."""
         try:
-            engine = self.tts_engine.get().split()[0].lower()
-            
-            if engine == "xtts":
-                # Gera áudio com XTTS
-                self._generate_all_audios_xtts()
-            else:
-                # Gera áudio com Kokoro
-                self._generate_all_audios_kokoro()
+            # Gera áudio com XTTS
+            self._generate_all_audios_xtts()
                 
         except Exception as e:
             self.message_queue.put(("error", f"Erro ao gerar áudios: {e}"))
@@ -992,13 +944,8 @@ class VideoGeneratorApp:
         self.root.after(0, self._refresh_audio_list)
 
     def _generate_tts(self, text: str, output_path: Path) -> None:
-        """Gera áudio usando o motor TTS selecionado (Kokoro ou XTTS)."""
-        engine = self.tts_engine.get().split()[0].lower()
-        
-        if engine == "xtts":
-            self._generate_tts_xtts(text, output_path)
-        else:
-            self._generate_tts_kokoro(text, output_path)
+        """Gera áudio usando XTTS com clonagem de voz."""
+        self._generate_tts_xtts(text, output_path)
 
     def _generate_tts_xtts(self, text: str, output_path: Path) -> None:
         """Gera áudio usando XTTS com clonagem de voz."""
@@ -1697,70 +1644,47 @@ class VideoGeneratorApp:
             self.message_queue.put(("error", str(exc)))
 
     def _generate_tts(self, text: str, output_path: Path) -> None:
-        """Gera áudio usando Kokoro TTS localmente."""
-        if not KOKORO_AVAILABLE:
-            raise RuntimeError("Kokoro não está instalado. Instale com: pip install kokoro")
+        """Gera áudio usando XTTS com clonagem de voz."""
+        self._generate_tts_xtts(text, output_path)
+
+    def _generate_tts_xtts(self, text: str, output_path: Path) -> None:
+        """Gera áudio usando XTTS com clonagem de voz."""
+        if self.xtts_model is None:
+            raise RuntimeError("Modelo XTTS não carregado. Carregue o modelo na aba Audio primeiro.")
         
-        if not self.tts_model_loaded:
-            raise RuntimeError("Modelo Kokoro não carregado. Carregue o modelo na aba Audio primeiro.")
+        speaker_wav = self.tts_voice_ref_path.get().strip()
+        if not speaker_wav:
+            raise RuntimeError("XTTS requer um áudio de referência. Selecione um arquivo na aba Audio.")
+        
+        # Mapeia para o formato do XTTS
+        lang_mapping = {
+            "pt-br": "pt",
+            "en-us": "en",
+            "en-gb": "en",
+            "es-es": "es",
+            "fr-fr": "fr",
+            "de-de": "de",
+            "it-it": "it",
+            "ja-jp": "ja",
+            "zh-cn": "zh"
+        }
+        lang = lang_mapping.get(self.tts_language.get().lower(), "pt")
         
         try:
-            # Mapeia o código de idioma para o formato do Kokoro
-            lang_mapping = {
-                "pt-br": "p",
-                "en-us": "a",
-                "en-gb": "b",
-                "es-es": "e",
-                "fr-fr": "f",
-                "de-de": "g",
-                "it-it": "i",
-                "ja-jp": "j",
-                "zh-cn": "z"
-            }
-            lang_code = lang_mapping.get(self.tts_language.get().lower(), "p")
-            
-            # Carrega o modelo
-            model = KModel()
-            # Extrai apenas o nome da voz (sem a descrição)
-            voice_full = self.tts_voice_name.get().strip()
-            voice_name = voice_full.split()[0] if voice_full else "af_heart"
-            
-            # Nota: A versão atual do Kokoro (0.9.4) não suporta clonagem de voz
-            # a partir de áudio de referência. Apenas vozes pré-treinadas (.pt) são suportadas.
-            if self.tts_voice_ref_path.get().strip():
-                self._queue_status("Aviso: Clonagem por áudio não disponível nesta versão do Kokoro.", step=True)
-            
-            # Cria pipeline com modelo
-            pipeline = KPipeline(lang_code=lang_code, model=model)
-            
-            # Gera áudio com Kokoro
-            generator = pipeline(text, voice=voice_name)
-            
-            # Salva o áudio gerado
-            with wave.open(str(output_path), "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(24000)
-                
-                for chunk in generator:
-                    # Converte float32 para int16
-                    # Na nova versao do Kokoro, chunk é um objeto Result com propriedade audio
-                    if hasattr(chunk, 'audio') and chunk.audio is not None:
-                        audio_tensor = chunk.audio
-                    elif hasattr(chunk, 'numpy'):
-                        audio_tensor = chunk
-                    else:
-                        audio_tensor = torch.from_numpy(chunk)
-                    
-                    audio_data = (audio_tensor * 32767).to(torch.int16).numpy()
-                    wf.writeframes(audio_data.tobytes())
+            # Gera áudio com XTTS
+            self.xtts_model.tts_to_file(
+                text=text,
+                speaker_wav=speaker_wav,
+                language=lang,
+                file_path=str(output_path)
+            )
             
             self._queue_status(f"Áudio gerado: {text[:50]}...", step=True)
             
         except MemoryError:
             raise RuntimeError("Memória insuficiente para gerar áudio. Tente fechar outros programas.")
         except Exception as e:
-            raise RuntimeError(f"Erro ao gerar áudio com Kokoro: {e}")
+            raise RuntimeError(f"Erro ao gerar áudio com XTTS: {e}")
 
         chunk_seconds = 0.25
         silence_limit = 1.25
