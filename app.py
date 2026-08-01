@@ -264,7 +264,8 @@ class VideoGeneratorApp:
         prompt_frame.pack(fill=X, pady=(6, 14))
         self.script_prompt_text = Text(prompt_frame, height=4, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=12, pady=10)
         self.script_prompt_text.pack(fill=X)
-        self.script_prompt_text.insert("1.0", self.script_prompt_value.get())
+        default_prompt = getattr(self, "_saved_script_prompt", None) or self.script_prompt_value.get()
+        self.script_prompt_text.insert("1.0", default_prompt)
 
         actions = Frame(parent, bg="#ffffff", pady=12)
         actions.pack(fill=X)
@@ -1067,10 +1068,7 @@ class VideoGeneratorApp:
                 self.logo_size.set(data.get("logo_size", self.logo_size.get()))
                 self.logo_text.set(data.get("logo_text", self.logo_text.get()))
                 self.tts_voice_ref_path.set(data.get("tts_voice_ref_path", self.tts_voice_ref_path.get()))
-                saved_prompt = data.get("script_prompt", "")
-                if saved_prompt:
-                    self.script_prompt_text.delete("1.0", END)
-                    self.script_prompt_text.insert("1.0", saved_prompt)
+                self._saved_script_prompt = data.get("script_prompt", "")
             except json.JSONDecodeError:
                 pass
 
