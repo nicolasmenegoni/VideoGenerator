@@ -251,17 +251,43 @@ class VideoGeneratorApp:
         Button(parent, text="Salvar chaves", command=self._save_config, bg="#111827", fg="#ffffff", activebackground="#2a3446", activeforeground="#ffffff", relief="flat", padx=18, pady=10, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(16, 0))
 
     def _build_script_tab(self, parent: Frame) -> None:
-        top = Frame(parent, bg="#ffffff")
-        top.pack(fill=X)
+        # Criar canvas com scrollbar para permitir rolagem de todo o conteúdo da aba
+        canvas = Canvas(parent, bg="#ffffff", highlightthickness=0)
+        script_content_frame = Frame(canvas, bg="#ffffff")
+        
+        # Scrollbar vertical para o canvas
+        canvas_scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=canvas_scrollbar.set)
+        
+        canvas_scrollbar.pack(side=RIGHT, fill=Y)
+        canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        
+        # Configurar o frame dentro do canvas
+        canvas_window = canvas.create_window((0, 0), window=script_content_frame, anchor="nw")
+        
+        def on_configure(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        
+        script_content_frame.bind("<Configure>", on_configure)
+        canvas.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        
+        # Bind mouse wheel para scroll
+        def on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
+        
+        top = Frame(script_content_frame, bg="#ffffff")
+        top.pack(fill=X, padx=20, pady=(20, 10))
         ttk.Label(top, text="Roteiro", style="Title.TLabel").pack(anchor="w")
         ttk.Label(top, text="Digite o título e depois uma frase por linha. O título será usado como nome do arquivo .mp4.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
 
-        Label(parent, text="Titulo", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        Entry(parent, textvariable=self.video_title, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 12)).pack(fill=X, ipady=10, pady=(6, 14))
+        Label(script_content_frame, text="Titulo", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20)
+        Entry(script_content_frame, textvariable=self.video_title, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 12)).pack(fill=X, ipady=10, pady=(6, 14), padx=20)
 
-        Label(parent, text="Prompt para o roteiro", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        prompt_frame = Frame(parent, bg="#ffffff")
-        prompt_frame.pack(fill=X, pady=(6, 14))
+        Label(script_content_frame, text="Prompt para o roteiro", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20)
+        prompt_frame = Frame(script_content_frame, bg="#ffffff")
+        prompt_frame.pack(fill=X, pady=(6, 14), padx=20)
         self.script_prompt_text = Text(prompt_frame, height=6, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=12, pady=10)
         prompt_scrollbar = ttk.Scrollbar(prompt_frame, orient="vertical", command=self.script_prompt_text.yview)
         self.script_prompt_text.configure(yscrollcommand=prompt_scrollbar.set)
@@ -270,13 +296,14 @@ class VideoGeneratorApp:
         default_prompt = getattr(self, "_saved_script_prompt", None) or self.script_prompt_value.get()
         self.script_prompt_text.insert("1.0", default_prompt)
 
-        actions = Frame(parent, bg="#ffffff", pady=12)
-        actions.pack(fill=X)
+        actions = Frame(script_content_frame, bg="#ffffff", pady=12)
+        actions.pack(fill=X, padx=20)
         Button(actions, text="Atualizar roteiro", command=self._refresh_lines, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
         Button(actions, text="Gerar roteiro", command=self._start_script_generation, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
 
-        script_frame = Frame(parent, bg="#ffffff")
-        script_frame.pack(fill=BOTH, expand=True)
+        Label(script_content_frame, text="Roteiro (uma frase por linha)", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20, pady=(10, 6))
+        script_frame = Frame(script_content_frame, bg="#ffffff")
+        script_frame.pack(fill=BOTH, expand=True, padx=20, pady=(0, 20))
         self.script_text = Text(script_frame, height=16, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
         script_scrollbar = ttk.Scrollbar(script_frame, orient="vertical", command=self.script_text.yview)
         self.script_text.configure(yscrollcommand=script_scrollbar.set)
