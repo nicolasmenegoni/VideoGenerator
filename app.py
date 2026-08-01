@@ -95,6 +95,7 @@ class VideoGeneratorApp:
         self.logo_path = StringVar(value="")
         self.logo_position = StringVar(value="Canto superior direito")
         self.logo_size = StringVar(value="20")
+        self.logo_text = StringVar(value="")
         self.video_title = StringVar(value="video_gerado")
         self.output_dir = StringVar(value=str(Path.home() / "Videos"))
         self.video_extra_after_audio = StringVar(value="1")
@@ -494,12 +495,13 @@ class VideoGeneratorApp:
             ["Canto superior direito", "Canto superior esquerdo", "Canto inferior direito", "Canto inferior esquerdo"],
         )
         self._entry_row(controls, "Tamanho da logo (% da largura do vídeo)", self.logo_size, "Ex.: 20. Use 0 para não exibir a logo.")
+        self._entry_row(controls, "Texto abaixo da logo (opcional)", self.logo_text, "Digite um texto para aparecer abaixo da logo no preview e no vídeo.")
         Button(controls, text="Remover logo", command=self._clear_logo, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(anchor="w")
 
         ttk.Label(preview_box, text="Preview", style="Title.TLabel").pack(anchor="w")
         self.logo_preview = Canvas(preview_box, width=300, height=500, bg="#111827", bd=0, highlightthickness=0)
         self.logo_preview.pack(pady=(12, 0))
-        for variable in [self.logo_path, self.logo_position, self.logo_size]:
+        for variable in [self.logo_path, self.logo_position, self.logo_size, self.logo_text]:
             variable.trace_add("write", lambda *_args: self._update_logo_preview())
         self._update_logo_preview()
 
@@ -550,6 +552,12 @@ class VideoGeneratorApp:
         margin = 22
         x, y = self._logo_preview_coordinates(width, height, self.logo_preview_image.width(), self.logo_preview_image.height(), margin)
         canvas.create_image(x, y, image=self.logo_preview_image, anchor="nw")
+        
+        # Adiciona o texto abaixo da logo no preview
+        logo_text = self.logo_text.get().strip()
+        if logo_text:
+            text_y = y + self.logo_preview_image.height() + 12
+            canvas.create_text(x + self.logo_preview_image.width() // 2, text_y, text=logo_text, fill="#ffffff", font=("Segoe UI", 10, "bold"), anchor="n")
 
     def _entry_row(self, parent: Frame, label: str, variable: StringVar, hint: str) -> None:
         Label(parent, text=label, bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
@@ -1060,6 +1068,7 @@ class VideoGeneratorApp:
                 self.logo_path.set(data.get("logo_path", self.logo_path.get()))
                 self.logo_position.set(data.get("logo_position", self.logo_position.get()) or self.logo_position.get())
                 self.logo_size.set(data.get("logo_size", self.logo_size.get()))
+                self.logo_text.set(data.get("logo_text", self.logo_text.get()))
                 self.tts_voice_ref_path.set(data.get("tts_voice_ref_path", self.tts_voice_ref_path.get()))
             except json.JSONDecodeError:
                 pass
@@ -1103,6 +1112,7 @@ class VideoGeneratorApp:
             "logo_path": self.logo_path.get().strip(),
             "logo_position": self.logo_position.get().strip(),
             "logo_size": self.logo_size.get().strip(),
+            "logo_text": self.logo_text.get().strip(),
             "tts_voice_ref_path": self.tts_voice_ref_path.get().strip(),
         }
         CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -1625,6 +1635,11 @@ class VideoGeneratorApp:
                     self._queue_status(f"Gerando áudio {index}/{len(self.lines)}...", step=True)
                     audio_path = workdir / f"audio_{index:03d}.wav"
                     self._generate_tts(line.text, audio_path)
+                    
+                    # Adiciona 1 segundo de silêncio no início do primeiro áudio
+                    if index == 1:
+                        self._add_silence_to_audio_beginning(audio_path, 1.0)
+                    
                     audio_paths.append(audio_path)
 
                 for index, (line, audio_path) in enumerate(zip(self.lines, audio_paths, strict=True), start=1):
@@ -1897,15 +1912,26 @@ class VideoGeneratorApp:
             duration = audio_duration
         video_filter = self._video_filter(subtitle_text, clip_path.with_suffix(".subtitle.ass"), duration, audio_duration)
         logo_path = self._logo_file_path()
+        logo_text = self.logo_text.get().strip()
         if logo_path:
             logo_width = max(1, int(1080 * self._logo_size_fraction()))
             logo_x, logo_y = self._logo_overlay_expression()
-            filter_complex = (
-                f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[base];"
-                f"[2:v:0]format=rgba,scale={logo_width}:-1[logo];"
-                f"[base][logo]overlay={logo_x}:{logo_y}:format=auto[v];"
-                f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
-            )
+            if logo_text:
+                escaped_text = self._escape_drawtext(logo_text)
+                filter_complex = (
+                    f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[base];"
+                    f"[2:v:0]format=rgba,scale={logo_width}:-1[logo];"
+                    f"[base][logo]overlay={logo_x}:{logo_y}:format=auto[with_logo];"
+                    f"[with_logo]drawtext=text='{escaped_text}':fontcolor=white:fontsize=24:x={logo_x}+w/2:y={logo_y}+h+12:font='Arial':alignment=center[v];"
+                    f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
+                )
+            else:
+                filter_complex = (
+                    f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[base];"
+                    f"[2:v:0]format=rgba,scale={logo_width}:-1[logo];"
+                    f"[base][logo]overlay={logo_x}:{logo_y}:format=auto[v];"
+                    f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
+                )
         else:
             filter_complex = (
                 f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[v];"
@@ -2328,6 +2354,28 @@ class VideoGeneratorApp:
             frames = wav_file.getnframes()
             rate = wav_file.getframerate()
             return frames / float(rate)
+
+    def _add_silence_to_audio_beginning(self, audio_path: Path, silence_duration: float) -> None:
+        """Adiciona silêncio no início de um arquivo de áudio WAV."""
+        try:
+            with wave.open(str(audio_path), "rb") as wav_file:
+                frames = wav_file.readframes(wav_file.getnframes())
+                rate = wav_file.getframerate()
+                channels = wav_file.getnchannels()
+                sample_width = wav_file.getsampwidth()
+            
+            # Calcula número de samples de silêncio
+            silence_samples = int(silence_duration * rate)
+            silence_bytes = b'\x00' * (silence_samples * channels * sample_width)
+            
+            # Escreve novo arquivo com silêncio no início
+            with wave.open(str(audio_path), "wb") as wav_file:
+                wav_file.setnchannels(channels)
+                wav_file.setsampwidth(sample_width)
+                wav_file.setframerate(rate)
+                wav_file.writeframes(silence_bytes + frames)
+        except Exception as e:
+            raise RuntimeError(f"Erro ao adicionar silêncio no áudio: {e}")
 
 
 if __name__ == "__main__":
