@@ -723,6 +723,18 @@ class VideoGeneratorApp:
         engine_combo.pack(side=LEFT, ipady=4)
         Label(engine_row, text="Selecione o motor de síntese de voz.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(side=LEFT, padx=(10, 0))
         
+        # Adiciona callback para atualizar o status quando mudar o engine
+        def on_engine_change(event=None):
+            engine = self.tts_engine.get().split()[0].lower()
+            if engine == "xtts" and self.xtts_model is not None:
+                self.tts_status_label.configure(text="XTTS: Carregado e pronto", fg="#059669")
+            elif engine == "kokoro" and self.tts_model_loaded:
+                self.tts_status_label.configure(text="Kokoro: Carregado e pronto", fg="#059669")
+            else:
+                self.tts_status_label.configure(text=f"{engine.upper()}: Não carregado", fg="#dc2626")
+        
+        engine_combo.bind("<<ComboboxSelected>>", on_engine_change)
+        
         # Idioma
         lang_row = Frame(tts_card, bg="#f8f9fd")
         lang_row.pack(fill=X, pady=(6, 6))
@@ -803,14 +815,15 @@ class VideoGeneratorApp:
             # Número da frase
             Label(frame, text=f"{index}.", bg="#f9fafb", fg="#657084", font=("Segoe UI", 9, "bold"), width=3).pack(side=LEFT)
             
-            # Texto da frase
+            # Texto da frase (sempre atualizado com o roteiro atual)
             text_label = Label(frame, text=line.text[:80] + ("..." if len(line.text) > 80 else ""), bg="#f9fafb", fg="#111827", font=("Segoe UI", 9), wraplength=500, justify=LEFT)
             text_label.pack(side=LEFT, fill=X, expand=True, padx=(6, 10))
             
-            # Botão Escutar - usa caminho correto
+            # Botão Escutar - usa caminho correto com closure adequado
             audio_path = CLIPBOARD_MEDIA_DIR / f"audio_{index:03d}.wav"
             if audio_path.exists():
-                Button(frame, text="Escutar áudio", command=lambda p=audio_path: self._play_audio(p), bg="#e0f2fe", fg="#0369a1", relief="flat", padx=10, pady=4, font=("Segoe UI", 9)).pack(side=RIGHT)
+                # Usa default argument para capturar o valor correto de audio_path
+                Button(frame, text="Escutar áudio", command=lambda path=audio_path: self._play_audio(path), bg="#e0f2fe", fg="#0369a1", relief="flat", padx=10, pady=4, font=("Segoe UI", 9)).pack(side=RIGHT)
             else:
                 Label(frame, text="Áudio não gerado", bg="#f9fafb", fg="#9ca3af", font=("Segoe UI", 8)).pack(side=RIGHT, padx=(10, 0))
 
@@ -958,6 +971,10 @@ class VideoGeneratorApp:
             if self.xtts_model is None:
                 messagebox.showwarning(APP_TITLE, "Modelo XTTS não carregado.\nClique em Carregar XTTS antes de gerar os áudios.")
                 return
+            # Verifica se há áudio de referência para XTTS
+            if not self.tts_voice_ref_path.get().strip():
+                messagebox.showwarning(APP_TITLE, "XTTS requer um áudio de referência.\nSelecione um arquivo de áudio (3-10 segundos) na aba Audio antes de gerar.")
+                return
         else:
             messagebox.showerror(APP_TITLE, "Motor TTS não selecionado corretamente.")
             return
@@ -1069,6 +1086,8 @@ class VideoGeneratorApp:
         
         self.root.after(0, lambda: self.progress_text.set("Todos os áudios gerados!"))
         self.root.after(0, lambda: self.status_text.set("Áudios gerados com Kokoro"))
+        # Atualiza a lista de áudios na interface
+        self.root.after(0, self._refresh_audio_list)
 
     def _generate_all_audios_xtts(self) -> None:
         """Worker para gerar áudios com XTTS."""
@@ -1125,6 +1144,8 @@ class VideoGeneratorApp:
         
         self.root.after(0, lambda: self.progress_text.set("Todos os áudios XTTS gerados!"))
         self.root.after(0, lambda: self.status_text.set("Áudios gerados com XTTS"))
+        # Atualiza a lista de áudios na interface
+        self.root.after(0, self._refresh_audio_list)
 
     def _generate_tts(self, text: str, output_path: Path) -> None:
         """Gera áudio usando o motor TTS selecionado (Kokoro ou XTTS)."""
