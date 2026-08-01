@@ -801,8 +801,8 @@ class VideoGeneratorApp:
         for widget in self.audio_list_frame.winfo_children():
             widget.destroy()
         
-        # Não chama _refresh_lines() para não sobrescrever o roteiro atual
-        # Apenas usa as linhas já existentes
+        # Atualiza as linhas do roteiro antes de mostrar a lista
+        self._refresh_lines()
         
         if not self.lines:
             Label(self.audio_list_frame, text="Nenhuma frase no roteiro. Vá para a aba Roteiro e gere ou digite um roteiro.", bg="#ffffff", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
@@ -819,11 +819,16 @@ class VideoGeneratorApp:
             text_label = Label(frame, text=line.text[:80] + ("..." if len(line.text) > 80 else ""), bg="#f9fafb", fg="#111827", font=("Segoe UI", 9), wraplength=500, justify=LEFT)
             text_label.pack(side=LEFT, fill=X, expand=True, padx=(6, 10))
             
-            # Botão Escutar - usa caminho correto com closure adequado
+            # Botão Escutar - usa índice para buscar o caminho correto no momento do clique
             audio_path = CLIPBOARD_MEDIA_DIR / f"audio_{index:03d}.wav"
             if audio_path.exists():
-                # Usa default argument para capturar o valor correto de audio_path
-                Button(frame, text="Escutar áudio", command=lambda path=audio_path: self._play_audio(path), bg="#e0f2fe", fg="#0369a1", relief="flat", padx=10, pady=4, font=("Segoe UI", 9)).pack(side=RIGHT)
+                # Usa função factory para criar closure correto com o índice
+                def make_play_callback(idx):
+                    def callback():
+                        path = CLIPBOARD_MEDIA_DIR / f"audio_{idx:03d}.wav"
+                        self._play_audio(path)
+                    return callback
+                Button(frame, text="Escutar áudio", command=make_play_callback(index), bg="#e0f2fe", fg="#0369a1", relief="flat", padx=10, pady=4, font=("Segoe UI", 9)).pack(side=RIGHT)
             else:
                 Label(frame, text="Áudio não gerado", bg="#f9fafb", fg="#9ca3af", font=("Segoe UI", 8)).pack(side=RIGHT, padx=(10, 0))
 
