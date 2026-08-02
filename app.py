@@ -1978,7 +1978,7 @@ class VideoGeneratorApp:
                     f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[base];"
                     f"[2:v:0]format=rgba,scale={logo_width}:-1[logo];"
                     f"[base][logo]overlay={logo_x}:{logo_y}:format=auto[with_logo];"
-                    f"[with_logo]drawtext=text='{escaped_text}':fontcolor=white:fontsize={logo_text_size}:x=w/2:y={logo_y}+h+{logo_text_offset}:font='{logo_text_font}':anchor=tc[v];"
+                    f"[with_logo]drawtext=text='{escaped_text}':fontcolor=white:fontsize={logo_text_size}:x=(w-text_w)/2:y={logo_y}+h+{logo_text_offset}:font='{logo_text_font}'[v];"
                     f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
                 )
             else:
