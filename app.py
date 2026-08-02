@@ -95,6 +95,7 @@ class VideoGeneratorApp:
         self.logo_path = StringVar(value="")
         self.logo_position = StringVar(value="Canto superior direito")
         self.logo_size = StringVar(value="20")
+        self.logo_text = StringVar(value="")
         self.video_title = StringVar(value="video_gerado")
         self.output_dir = StringVar(value=str(Path.home() / "Videos"))
         self.video_extra_after_audio = StringVar(value="1")
@@ -138,7 +139,7 @@ class VideoGeneratorApp:
         self.media_preview_failed: set[str] = set()
         self.logo_preview_image: ImageTk.PhotoImage | None = None
         self.script_text_value = DEFAULT_SCRIPT_TEXT
-        self.script_prompt_value = StringVar(value="")
+        self.script_prompt_value = StringVar(value="Crie um roteiro curto para um vídeo vertical em português do Brasil com base no título informado. O roteiro deve ter de 6 a 10 frases curtas, naturais para narração em voz alta, com gancho no começo e fechamento no final. Cada frase deve funcionar como uma cena separada do vídeo. Não use numeração, marcadores, emojis, markdown, aspas, chaves, colchetes ou título dentro das frases. Responda somente com as frases finais, uma por linha, sem JSON e sem texto extra.")
         self.lines: list[ScriptLine] = []
         self.used_media_urls: set[str] = set()
         self.message_queue: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -250,24 +251,64 @@ class VideoGeneratorApp:
         Button(parent, text="Salvar chaves", command=self._save_config, bg="#111827", fg="#ffffff", activebackground="#2a3446", activeforeground="#ffffff", relief="flat", padx=18, pady=10, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(16, 0))
 
     def _build_script_tab(self, parent: Frame) -> None:
-        top = Frame(parent, bg="#ffffff")
-        top.pack(fill=X)
+        # Criar canvas com scrollbar para permitir rolagem de todo o conteúdo da aba
+        canvas = Canvas(parent, bg="#ffffff", highlightthickness=0)
+        script_content_frame = Frame(canvas, bg="#ffffff")
+        
+        # Scrollbar vertical para o canvas
+        canvas_scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=canvas_scrollbar.set)
+        
+        canvas_scrollbar.pack(side=RIGHT, fill=Y)
+        canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        
+        # Configurar o frame dentro do canvas
+        canvas_window = canvas.create_window((0, 0), window=script_content_frame, anchor="nw")
+        
+        def on_configure(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        
+        script_content_frame.bind("<Configure>", on_configure)
+        canvas.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        
+        # Bind mouse wheel para scroll
+        def on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
+        
+        top = Frame(script_content_frame, bg="#ffffff")
+        top.pack(fill=X, padx=20, pady=(20, 10))
         ttk.Label(top, text="Roteiro", style="Title.TLabel").pack(anchor="w")
         ttk.Label(top, text="Digite o título e depois uma frase por linha. O título será usado como nome do arquivo .mp4.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
 
-        Label(parent, text="Titulo", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        Entry(parent, textvariable=self.video_title, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 12)).pack(fill=X, ipady=10, pady=(6, 14))
+        Label(script_content_frame, text="Titulo", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20)
+        Entry(script_content_frame, textvariable=self.video_title, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 12)).pack(fill=X, ipady=10, pady=(6, 14), padx=20)
 
-        Label(parent, text="Prompt para o roteiro (opcional)", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        Entry(parent, textvariable=self.script_prompt_value, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 12)).pack(fill=X, ipady=10, pady=(6, 14))
+        Label(script_content_frame, text="Prompt para o roteiro", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20)
+        prompt_frame = Frame(script_content_frame, bg="#ffffff")
+        prompt_frame.pack(fill=X, pady=(6, 14), padx=20)
+        self.script_prompt_text = Text(prompt_frame, height=4, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=12, pady=10)
+        prompt_scrollbar = ttk.Scrollbar(prompt_frame, orient="vertical", command=self.script_prompt_text.yview)
+        self.script_prompt_text.configure(yscrollcommand=prompt_scrollbar.set)
+        self.script_prompt_text.pack(side=LEFT, fill=BOTH, expand=True)
+        prompt_scrollbar.pack(side=RIGHT, fill=Y)
+        default_prompt = getattr(self, "_saved_script_prompt", None) or self.script_prompt_value.get()
+        self.script_prompt_text.insert("1.0", default_prompt)
 
-        actions = Frame(parent, bg="#ffffff", pady=12)
-        actions.pack(fill=X)
+        actions = Frame(script_content_frame, bg="#ffffff", pady=12)
+        actions.pack(fill=X, padx=20)
         Button(actions, text="Atualizar roteiro", command=self._refresh_lines, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
         Button(actions, text="Gerar roteiro", command=self._start_script_generation, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
 
-        self.script_text = Text(parent, height=12, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
-        self.script_text.pack(fill=BOTH, expand=True)
+        Label(script_content_frame, text="Roteiro (uma frase por linha)", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20, pady=(10, 6))
+        script_frame = Frame(script_content_frame, bg="#ffffff")
+        script_frame.pack(fill=BOTH, expand=True, padx=20, pady=(0, 20))
+        self.script_text = Text(script_frame, height=10, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
+        script_scrollbar = ttk.Scrollbar(script_frame, orient="vertical", command=self.script_text.yview)
+        self.script_text.configure(yscrollcommand=script_scrollbar.set)
+        self.script_text.pack(side=LEFT, fill=BOTH, expand=True)
+        script_scrollbar.pack(side=RIGHT, fill=Y)
         self.script_text.insert("1.0", self.script_text_value)
 
     def _start_script_generation(self) -> None:
@@ -283,7 +324,7 @@ class VideoGeneratorApp:
         self.progress.configure(value=0, maximum=1)
         self.progress_text.set("Gerando roteiro...")
         self.status_text.set("Gerando roteiro com Groq...")
-        prompt = self.script_prompt_value.get().strip()
+        prompt = self.script_prompt_text.get("1.0", END).strip()
         threading.Thread(target=self._generate_script_worker, args=(title, prompt), daemon=True).start()
 
     def _generate_script_worker(self, title: str, prompt: str = "") -> None:
@@ -302,20 +343,13 @@ class VideoGeneratorApp:
         self.progress.configure(value=1)
 
     def _groq_script_lines(self, title: str, prompt: str = "") -> list[str]:
-        base_prompt = (
-            "Crie um roteiro curto para um vídeo vertical em português do Brasil com base no título informado. "
-            "O roteiro deve ter de 6 a 10 frases curtas, naturais para narração em voz alta, com gancho no começo e fechamento no final. "
-            "Cada frase deve funcionar como uma cena separada do vídeo. "
-            "Não use numeração, marcadores, emojis, markdown, aspas, chaves, colchetes ou título dentro das frases. "
-            "Responda somente com as frases finais, uma por linha, sem JSON e sem texto extra.\n\n"
-            f"Título: {title}"
-        )
-        if prompt:
-            base_prompt = f"{prompt}\n\n{base_prompt}"
+        if not prompt.strip():
+            prompt = "Crie um roteiro curto para um vídeo vertical em português do Brasil com base no título informado. O roteiro deve ter de 6 a 10 frases curtas, naturais para narração em voz alta, com gancho no começo e fechamento no final. Cada frase deve funcionar como uma cena separada do vídeo. Não use numeração, marcadores, emojis, markdown, aspas, chaves, colchetes ou título dentro das frases. Responda somente com as frases finais, uma por linha, sem JSON e sem texto extra."
+        full_prompt = f"{prompt}\n\nTítulo: {title}"
         content = self._groq_chat_content(
             messages=[
                 {"role": "system", "content": "Você cria roteiros curtos para vídeos verticais em português do Brasil."},
-                {"role": "user", "content": base_prompt},
+                {"role": "user", "content": full_prompt},
             ],
             temperature=0.7,
             max_tokens=900,
@@ -494,12 +528,13 @@ class VideoGeneratorApp:
             ["Canto superior direito", "Canto superior esquerdo", "Canto inferior direito", "Canto inferior esquerdo"],
         )
         self._entry_row(controls, "Tamanho da logo (% da largura do vídeo)", self.logo_size, "Ex.: 20. Use 0 para não exibir a logo.")
+        self._entry_row(controls, "Texto abaixo da logo (opcional)", self.logo_text, "Digite um texto para aparecer abaixo da logo no preview e no vídeo.")
         Button(controls, text="Remover logo", command=self._clear_logo, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(anchor="w")
 
         ttk.Label(preview_box, text="Preview", style="Title.TLabel").pack(anchor="w")
         self.logo_preview = Canvas(preview_box, width=300, height=500, bg="#111827", bd=0, highlightthickness=0)
         self.logo_preview.pack(pady=(12, 0))
-        for variable in [self.logo_path, self.logo_position, self.logo_size]:
+        for variable in [self.logo_path, self.logo_position, self.logo_size, self.logo_text]:
             variable.trace_add("write", lambda *_args: self._update_logo_preview())
         self._update_logo_preview()
 
@@ -550,6 +585,12 @@ class VideoGeneratorApp:
         margin = 22
         x, y = self._logo_preview_coordinates(width, height, self.logo_preview_image.width(), self.logo_preview_image.height(), margin)
         canvas.create_image(x, y, image=self.logo_preview_image, anchor="nw")
+        
+        # Adiciona o texto abaixo da logo no preview
+        logo_text = self.logo_text.get().strip()
+        if logo_text:
+            text_y = y + self.logo_preview_image.height() + 12
+            canvas.create_text(x + self.logo_preview_image.width() // 2, text_y, text=logo_text, fill="#ffffff", font=("Segoe UI", 10, "bold"), anchor="n")
 
     def _entry_row(self, parent: Frame, label: str, variable: StringVar, hint: str) -> None:
         Label(parent, text=label, bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
@@ -1060,7 +1101,9 @@ class VideoGeneratorApp:
                 self.logo_path.set(data.get("logo_path", self.logo_path.get()))
                 self.logo_position.set(data.get("logo_position", self.logo_position.get()) or self.logo_position.get())
                 self.logo_size.set(data.get("logo_size", self.logo_size.get()))
+                self.logo_text.set(data.get("logo_text", self.logo_text.get()))
                 self.tts_voice_ref_path.set(data.get("tts_voice_ref_path", self.tts_voice_ref_path.get()))
+                self._saved_script_prompt = data.get("script_prompt", "")
             except json.JSONDecodeError:
                 pass
 
@@ -1071,7 +1114,7 @@ class VideoGeneratorApp:
             "groq_key": self.groq_key.get().strip(),
             "video_title": self.video_title.get().strip(),
             "script_text": self.script_text_value,
-            "script_prompt": self.script_prompt_value.get().strip(),
+            "script_prompt": self.script_prompt_text.get("1.0", END).strip(),
             "script_lines": self._config_script_lines(),
             "output_dir": self.output_dir.get().strip(),
             "video_extra_after_audio": self.video_extra_after_audio.get().strip(),
@@ -1103,6 +1146,7 @@ class VideoGeneratorApp:
             "logo_path": self.logo_path.get().strip(),
             "logo_position": self.logo_position.get().strip(),
             "logo_size": self.logo_size.get().strip(),
+            "logo_text": self.logo_text.get().strip(),
             "tts_voice_ref_path": self.tts_voice_ref_path.get().strip(),
         }
         CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -1625,6 +1669,11 @@ class VideoGeneratorApp:
                     self._queue_status(f"Gerando áudio {index}/{len(self.lines)}...", step=True)
                     audio_path = workdir / f"audio_{index:03d}.wav"
                     self._generate_tts(line.text, audio_path)
+                    
+                    # Adiciona 1 segundo de silêncio no início do primeiro áudio
+                    if index == 1:
+                        self._add_silence_to_audio_beginning(audio_path, 1.0)
+                    
                     audio_paths.append(audio_path)
 
                 for index, (line, audio_path) in enumerate(zip(self.lines, audio_paths, strict=True), start=1):
@@ -1897,15 +1946,26 @@ class VideoGeneratorApp:
             duration = audio_duration
         video_filter = self._video_filter(subtitle_text, clip_path.with_suffix(".subtitle.ass"), duration, audio_duration)
         logo_path = self._logo_file_path()
+        logo_text = self.logo_text.get().strip()
         if logo_path:
             logo_width = max(1, int(1080 * self._logo_size_fraction()))
             logo_x, logo_y = self._logo_overlay_expression()
-            filter_complex = (
-                f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[base];"
-                f"[2:v:0]format=rgba,scale={logo_width}:-1[logo];"
-                f"[base][logo]overlay={logo_x}:{logo_y}:format=auto[v];"
-                f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
-            )
+            if logo_text:
+                escaped_text = self._escape_drawtext(logo_text)
+                filter_complex = (
+                    f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[base];"
+                    f"[2:v:0]format=rgba,scale={logo_width}:-1[logo];"
+                    f"[base][logo]overlay={logo_x}:{logo_y}:format=auto[with_logo];"
+                    f"[with_logo]drawtext=text='{escaped_text}':fontcolor=white:fontsize=24:x={logo_x}+w/2:y={logo_y}+h+12:font='Arial':alignment=center[v];"
+                    f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
+                )
+            else:
+                filter_complex = (
+                    f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[base];"
+                    f"[2:v:0]format=rgba,scale={logo_width}:-1[logo];"
+                    f"[base][logo]overlay={logo_x}:{logo_y}:format=auto[v];"
+                    f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
+                )
         else:
             filter_complex = (
                 f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[v];"
@@ -2328,6 +2388,28 @@ class VideoGeneratorApp:
             frames = wav_file.getnframes()
             rate = wav_file.getframerate()
             return frames / float(rate)
+
+    def _add_silence_to_audio_beginning(self, audio_path: Path, silence_duration: float) -> None:
+        """Adiciona silêncio no início de um arquivo de áudio WAV."""
+        try:
+            with wave.open(str(audio_path), "rb") as wav_file:
+                frames = wav_file.readframes(wav_file.getnframes())
+                rate = wav_file.getframerate()
+                channels = wav_file.getnchannels()
+                sample_width = wav_file.getsampwidth()
+            
+            # Calcula número de samples de silêncio
+            silence_samples = int(silence_duration * rate)
+            silence_bytes = b'\x00' * (silence_samples * channels * sample_width)
+            
+            # Escreve novo arquivo com silêncio no início
+            with wave.open(str(audio_path), "wb") as wav_file:
+                wav_file.setnchannels(channels)
+                wav_file.setsampwidth(sample_width)
+                wav_file.setframerate(rate)
+                wav_file.writeframes(silence_bytes + frames)
+        except Exception as e:
+            raise RuntimeError(f"Erro ao adicionar silêncio no áudio: {e}")
 
 
 if __name__ == "__main__":
