@@ -342,10 +342,8 @@
 
         .logo-preview img {
             position: absolute;
-            width: auto;
-            height: auto;
-            max-width: 80px;
-            max-height: 80px;
+            max-width: 60px;
+            max-height: 60px;
             object-fit: contain;
         }
 
@@ -864,20 +862,6 @@ Você precisa conhecer a China.</textarea>
                     if (state.config.videoTitle) document.getElementById('video-title').value = state.config.videoTitle;
                     if (state.config.scriptText) document.getElementById('script-text').value = state.config.scriptText;
                     if (state.config.outputDir) document.getElementById('output-dir').value = state.config.outputDir;
-                    if (state.config.logoPath) document.getElementById('logo-path').value = state.config.logoPath;
-                    if (state.config.logoPosition) document.getElementById('logo-position').value = state.config.logoPosition;
-                    if (state.config.logoSize) document.getElementById('logo-size').value = state.config.logoSize;
-                    if (state.config.logoText) document.getElementById('logo-text').value = state.config.logoText;
-                    if (state.config.logoTextSize) document.getElementById('logo-text-size').value = state.config.logoTextSize;
-                    if (state.config.logoTextFont) document.getElementById('logo-text-font').value = state.config.logoTextFont;
-                    if (state.config.logoTextPosition) document.getElementById('logo-text-position').value = state.config.logoTextPosition;
-                    if (state.config.subtitlePosition) document.getElementById('subtitle-position').value = state.config.subtitlePosition;
-                    if (state.config.subtitleSize) document.getElementById('subtitle-size').value = state.config.subtitleSize;
-                    if (state.config.subtitleFont) document.getElementById('subtitle-font').value = state.config.subtitleFont;
-                    if (state.config.subtitleColor) document.getElementById('subtitle-color').value = state.config.subtitleColor;
-                    if (state.config.subtitleBgColor) document.getElementById('subtitle-bg-color').value = state.config.subtitleBgColor;
-                    if (state.config.subtitleOutline) document.getElementById('subtitle-outline').value = state.config.subtitleOutline;
-                    if (state.config.subtitleBackground) document.getElementById('subtitle-background').value = state.config.subtitleBackground;
                     
                     console.log('Configuração carregada com sucesso');
                 } catch (e) {
@@ -893,21 +877,7 @@ Você precisa conhecer a China.</textarea>
                 groqKey: document.getElementById('groq-key').value.trim(),
                 videoTitle: document.getElementById('video-title').value.trim(),
                 scriptText: document.getElementById('script-text').value,
-                outputDir: document.getElementById('output-dir').value.trim(),
-                logoPath: document.getElementById('logo-path').value.trim(),
-                logoPosition: document.getElementById('logo-position').value,
-                logoSize: document.getElementById('logo-size').value,
-                logoText: document.getElementById('logo-text').value,
-                logoTextSize: document.getElementById('logo-text-size').value,
-                logoTextFont: document.getElementById('logo-text-font').value,
-                logoTextPosition: document.getElementById('logo-text-position').value,
-                subtitlePosition: document.getElementById('subtitle-position').value,
-                subtitleSize: document.getElementById('subtitle-size').value,
-                subtitleFont: document.getElementById('subtitle-font').value,
-                subtitleColor: document.getElementById('subtitle-color').value,
-                subtitleBgColor: document.getElementById('subtitle-bg-color').value,
-                subtitleOutline: document.getElementById('subtitle-outline').value,
-                subtitleBackground: document.getElementById('subtitle-background').value
+                outputDir: document.getElementById('output-dir').value.trim()
             };
             
             localStorage.setItem('videogenerator_config', JSON.stringify(state.config));
@@ -1010,23 +980,29 @@ Você precisa conhecer a China.</textarea>
             
             // Simulação de chamada à API usando apenas o que foi digitado no prompt
             setTimeout(() => {
-                if (!promptText) {
-                    alert('Digite um prompt na caixa de texto para gerar o roteiro.');
-                    setProgress(0);
-                    setStatus('Aguardando prompt...');
-                    setProgressText('Pendente');
-                    return;
+                let sampleScript = '';
+                
+                if (promptText) {
+                    // Usa apenas o que foi digitado no prompt
+                    sampleScript = promptText.split('\n').filter(line => line.trim()).join('\n');
+                } else {
+                    // Se não houver prompt, usa um script padrão baseado no título
+                    sampleScript = `Hoje vamos explorar ${title}.
+Este é um tema fascinante.
+Você vai descobrir coisas incríveis.
+Vamos começar pelo início.
+Os detalhes são surpreendentes.
+Não perca nenhuma parte.
+O final vai te impressionar.
+Compartilhe com seus amigos.`;
                 }
                 
-                // Usa apenas o que foi digitado no prompt, linha por linha
-                const sampleScript = promptText.split('\n').filter(line => line.trim()).join('\n');
-
                 document.getElementById('script-text').value = sampleScript;
                 refreshLines();
                 setProgress(100);
                 setStatus('Roteiro gerado com sucesso!');
                 setProgressText('Concluído');
-            }, 1500);
+            }, 2000);
         }
 
         // Alternar legendas
@@ -1080,12 +1056,11 @@ Você precisa conhecer a China.</textarea>
                 previewElement.style.top = '40px';
             }
             
-            // Fundo - quando desativado, remove completamente o background
+            // Fundo
             if (hasBackground) {
                 previewElement.style.backgroundColor = document.getElementById('subtitle-bg-color').value;
             } else {
                 previewElement.style.backgroundColor = 'transparent';
-                previewElement.style.background = 'none';
             }
             
             // Cor do texto
@@ -1102,6 +1077,7 @@ Você precisa conhecer a China.</textarea>
             previewElement.style.textShadow = `1px 1px 2px ${outlineColor}, -1px -1px 2px ${outlineColor}, 1px -1px 2px ${outlineColor}, -1px 1px 2px ${outlineColor}`;
         }
 
+        // Atualizar preview da logo
         function updateLogoPreview() {
             const logoPath = document.getElementById('logo-path').value;
             const logoPosition = document.getElementById('logo-position').value;
@@ -1111,12 +1087,12 @@ Você precisa conhecer a China.</textarea>
             const logoTextFont = document.getElementById('logo-text-font').value;
             const logoTextPosition = document.getElementById('logo-text-position').value;
             const preview = document.getElementById('logo-preview');
-
+            
             // Calcular posição da logo
             let logoStyle = '';
             const sizePercent = parseInt(logoSize) || 20;
-            const sizePx = Math.max(10, Math.round((sizePercent / 100) * 80));
-
+            const sizePx = Math.round((sizePercent / 100) * 60);
+            
             if (logoPosition === 'Canto superior direito') {
                 logoStyle = 'top: 20px; right: 20px;';
             } else if (logoPosition === 'Canto superior esquerdo') {
@@ -1126,33 +1102,47 @@ Você precisa conhecer a China.</textarea>
             } else if (logoPosition === 'Canto inferior esquerdo') {
                 logoStyle = 'bottom: 20px; left: 20px;';
             }
-
-            // Mostrar preview da logo apenas se houver um caminho definido
-            if (logoPath) {
-                let html = `<img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='${sizePx}' height='${sizePx}' viewBox='0 0 60 60'%3E%3Crect fill='%235b6cff' width='60' height='60'/%3E%3Ctext fill='white' x='50%25' y='50%25' text-anchor='middle' dy='.3em' font-size='10'%3ELOGO%3C/text%3E%3C/svg%3E" style="${logoStyle}" alt="Logo">`;
-
-                // Adicionar texto
-                if (logoText) {
-                    let textPosition = '';
-                    if (logoTextPosition === 'Abaixo') {
-                        textPosition = logoPosition.includes('superior') ? `top: ${20 + sizePx + 5}px;` : `bottom: ${20 + sizePx + 5}px;`;
-                    } else {
-                        textPosition = logoPosition.includes('superior') ? `top: ${20 - parseInt(logoTextSize) - 5}px;` : `bottom: ${20 - parseInt(logoTextSize) - 5}px;`;
-                    }
-
-                    if (logoPosition.includes('direito')) {
-                        textPosition += ' right: 20px; text-align: right;';
-                    } else {
-                        textPosition += ' left: 20px; text-align: left;';
-                    }
-
-                    html += `<div class="logo-preview-text" style="${textPosition} color: #ffffff; font-size: ${logoTextSize}px; font-family: ${logoTextFont};">${escapeHtml(logoText)}</div>`;
+            let html = `<img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='${sizePx}' height='${sizePx}' viewBox='0 0 60 60'%3E%3Crect fill='%235b6cff' width='60' height='60'/%3E%3Ctext fill='white' x='50%25' y='50%25' text-anchor='middle' dy='.3em' font-size='10'%3ELOGO%3C/text%3E%3C/svg%3E" style="${logoStyle}" alt="Logo">`;
+            
+            // Adicionar texto
+            if (logoText) {
+                if (logoTextPosition === 'Abaixo') {
+                    textPosition = logoPosition.includes('superior') ? `top: ${20 + sizePx + 5}px;` : `bottom: ${20 + sizePx + 5}px;`;
+                } else {
+                    textPosition = logoPosition.includes('superior') ? `top: ${20 - parseInt(logoTextSize) - 5}px;` : `bottom: ${20 - parseInt(logoTextSize) - 5}px;`;
                 }
-
-                preview.innerHTML = html;
-            } else {
-                preview.innerHTML = '<span style="color: #657084; font-size: 10px;">Sem logo selecionada</span>';
+                if (logoTextPosition === 'Abaixo') {
+                    textPosition = logoPosition.includes('superior') ? `top: ${20 + sizePx + 5}px;` : `bottom: ${20 + sizePx + 5}px;`;
+                } else {
+                    textPosition = logoPosition.includes('superior') ? `top: ${20 - parseInt(logoTextSize) - 5}px;` : `bottom: ${20 - parseInt(logoTextSize) - 5}px;`;
+                }
+                if (logoTextPosition === 'Abaixo') {
+                    textPosition = logoPosition.includes('superior') ? `top: ${20 + sizePx + 5}px;` : `bottom: ${20 + sizePx + 5}px;`;
+                } else {
+                    textPosition = logoPosition.includes('superior') ? `top: ${20 - parseInt(logoTextSize) - 5}px;` : `bottom: ${20 - parseInt(logoTextSize) - 5}px;`;
+                }
+                if (logoTextPosition === 'Abaixo') {
+                    textPosition = logoPosition.includes('superior') ? `top: ${20 + sizePx + 5}px;` : `bottom: ${20 + sizePx + 5}px;`;
+                } else {
+                    textPosition = logoPosition.includes('superior') ? `top: ${20 - parseInt(logoTextSize) - 5}px;` : `bottom: ${20 - parseInt(logoTextSize) - 5}px;`;
+                }
+                if (logoTextPosition === 'Abaixo') {
+                    textPosition = logoPosition.includes('superior') ? `top: ${20 + sizePx + 5}px;` : `bottom: ${20 + sizePx + 5}px;`;
+                } else {
+                    textPosition = logoPosition.includes('superior') ? `top: ${20 - parseInt(logoTextSize) - 5}px;` : `bottom: ${20 - parseInt(logoTextSize) - 5}px;`;
+                }
+                }
+                
+                if (logoPosition.includes('direito')) {
+                    textPosition += ' right: 20px; text-align: right;';
+                } else {
+                    textPosition += ' left: 20px; text-align: left;';
+                }
+                
+                html += `<div class="logo-preview-text" style="${textPosition} color: #ffffff; font-size: ${logoTextSize}px; font-family: ${logoTextFont};">${escapeHtml(logoText)}</div>`;
             }
+            
+            preview.innerHTML = html;
         }
 
         // Selecionar logo
