@@ -286,6 +286,7 @@
             font-size: 14px;
             text-align: center;
             max-width: 80%;
+            background-color: transparent;
         }
 
         .two-column {
@@ -958,6 +959,7 @@ Você precisa conhecer a China.</textarea>
         // Gerar roteiro com IA
         function generateScript() {
             const title = document.getElementById('video-title').value.trim();
+            const promptText = document.getElementById('script-prompt').value.trim();
             const groqKey = document.getElementById('groq-key').value.trim();
             
             if (!title) {
@@ -976,9 +978,16 @@ Você precisa conhecer a China.</textarea>
             setProgressText('Gerando roteiro...');
             setStatus('Gerando roteiro com Groq...');
             
-            // Simulação de chamada à API
+            // Simulação de chamada à API usando apenas o que foi digitado no prompt
             setTimeout(() => {
-                const sampleScript = `Hoje vamos explorar ${title}.
+                let sampleScript = '';
+                
+                if (promptText) {
+                    // Usa apenas o que foi digitado no prompt
+                    sampleScript = promptText.split('\n').filter(line => line.trim()).join('\n');
+                } else {
+                    // Se não houver prompt, usa um script padrão baseado no título
+                    sampleScript = `Hoje vamos explorar ${title}.
 Este é um tema fascinante.
 Você vai descobrir coisas incríveis.
 Vamos começar pelo início.
@@ -986,6 +995,7 @@ Os detalhes são surpreendentes.
 Não perca nenhuma parte.
 O final vai te impressionar.
 Compartilhe com seus amigos.`;
+                }
                 
                 document.getElementById('script-text').value = sampleScript;
                 refreshLines();
@@ -1067,7 +1077,6 @@ Compartilhe com seus amigos.`;
             previewElement.style.textShadow = `1px 1px 2px ${outlineColor}, -1px -1px 2px ${outlineColor}, 1px -1px 2px ${outlineColor}, -1px 1px 2px ${outlineColor}`;
         }
 
-        // Atualizar preview da logo
         function updateLogoPreview() {
             const logoPath = document.getElementById('logo-path').value;
             const logoPosition = document.getElementById('logo-position').value;
@@ -1077,17 +1086,12 @@ Compartilhe com seus amigos.`;
             const logoTextFont = document.getElementById('logo-text-font').value;
             const logoTextPosition = document.getElementById('logo-text-position').value;
             const preview = document.getElementById('logo-preview');
-            
-            if (!logoPath || logoSize == 0) {
-                preview.innerHTML = '<span style="color: #8b95a7;">Sem logo</span>';
-                return;
-            }
-            
+
             // Calcular posição da logo
             let logoStyle = '';
             const sizePercent = parseInt(logoSize) || 20;
             const sizePx = Math.round((sizePercent / 100) * 60);
-            
+
             if (logoPosition === 'Canto superior direito') {
                 logoStyle = 'top: 20px; right: 20px;';
             } else if (logoPosition === 'Canto superior esquerdo') {
@@ -1097,27 +1101,27 @@ Compartilhe com seus amigos.`;
             } else if (logoPosition === 'Canto inferior esquerdo') {
                 logoStyle = 'bottom: 20px; left: 20px;';
             }
-            
-            let html = `<img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='${sizePx}' height='${sizePx}' viewBox='0 0 60 60'%3E%3Crect fill='%235b6cff' width='60' height='60'/%3E%3Ctext fill='white' x='50%25' y='50%25' text-anchor='middle' dy='.3em' font-size='10'%3ELOGO%3C/text%3E%3C/svg%3E\" style=\"${logoStyle}\" alt=\"Logo\">`;
-            
+
+            let html = `<img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='${sizePx}' height='${sizePx}' viewBox='0 0 60 60'%3E%3Crect fill='%235b6cff' width='60' height='60'/%3E%3Ctext fill='white' x='50%25' y='50%25' text-anchor='middle' dy='.3em' font-size='10'%3ELOGO%3C/text%3E%3C/svg%3E" style="${logoStyle}" alt="Logo">`;
+
             // Adicionar texto
             if (logoText) {
                 let textPosition = '';
                 if (logoTextPosition === 'Abaixo') {
-                    textPosition = logoPosition.includes('superior') ? 'top: 85px;' : 'bottom: 85px;';
+                    textPosition = logoPosition.includes('superior') ? `top: ${20 + sizePx + 5}px;` : `bottom: ${20 + sizePx + 5}px;`;
                 } else {
-                    textPosition = logoPosition.includes('superior') ? 'top: 15px;' : 'bottom: 15px;';
+                    textPosition = logoPosition.includes('superior') ? `top: ${20 - parseInt(logoTextSize) - 5}px;` : `bottom: ${20 - parseInt(logoTextSize) - 5}px;`;
                 }
-                
+
                 if (logoPosition.includes('direito')) {
                     textPosition += ' right: 20px; text-align: right;';
                 } else {
                     textPosition += ' left: 20px; text-align: left;';
                 }
-                
+
                 html += `<div class="logo-preview-text" style="${textPosition} color: #ffffff; font-size: ${logoTextSize}px; font-family: ${logoTextFont};">${escapeHtml(logoText)}</div>`;
             }
-            
+
             preview.innerHTML = html;
         }
 
