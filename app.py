@@ -286,12 +286,12 @@ class VideoGeneratorApp:
         ttk.Label(top, text="Digite o título e depois uma frase por linha. O título será usado como nome do arquivo .mp4.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
 
         Label(script_content_frame, text="Titulo", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20)
-        Entry(script_content_frame, textvariable=self.video_title, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 12)).pack(fill=X, ipady=10, pady=(6, 14), padx=20)
+        Entry(script_content_frame, textvariable=self.video_title, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 12)).pack(fill=X, ipady=12, pady=(6, 14), padx=20)
 
         Label(script_content_frame, text="Prompt para o roteiro", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20)
         prompt_frame = Frame(script_content_frame, bg="#ffffff")
         prompt_frame.pack(fill=X, pady=(6, 14), padx=20)
-        self.script_prompt_text = Text(prompt_frame, height=4, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=12, pady=10)
+        self.script_prompt_text = Text(prompt_frame, height=3, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=12, pady=10)
         prompt_scrollbar = ttk.Scrollbar(prompt_frame, orient="vertical", command=self.script_prompt_text.yview)
         self.script_prompt_text.configure(yscrollcommand=prompt_scrollbar.set)
         self.script_prompt_text.pack(side=LEFT, fill=BOTH, expand=True)
@@ -307,7 +307,7 @@ class VideoGeneratorApp:
         Label(script_content_frame, text="Roteiro (uma frase por linha)", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20, pady=(10, 6))
         script_frame = Frame(script_content_frame, bg="#ffffff")
         script_frame.pack(fill=BOTH, expand=True, padx=20, pady=(0, 20))
-        self.script_text = Text(script_frame, height=10, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
+        self.script_text = Text(script_frame, height=8, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
         script_scrollbar = ttk.Scrollbar(script_frame, orient="vertical", command=self.script_text.yview)
         self.script_text.configure(yscrollcommand=script_scrollbar.set)
         self.script_text.pack(side=LEFT, fill=BOTH, expand=True)
@@ -507,14 +507,40 @@ class VideoGeneratorApp:
         self._update_subtitle_preview()
 
     def _build_logo_tab(self, parent: Frame) -> None:
-        top = Frame(parent, bg="#ffffff")
+        # Canvas com scrollbar para a aba Logo
+        logo_canvas = Canvas(parent, bg="#ffffff", highlightthickness=0)
+        logo_content_frame = Frame(logo_canvas, bg="#ffffff")
+        
+        # Scrollbar vertical
+        logo_scrollbar = ttk.Scrollbar(parent, orient="vertical", command=logo_canvas.yview)
+        logo_canvas.configure(yscrollcommand=logo_scrollbar.set)
+        
+        logo_scrollbar.pack(side=RIGHT, fill=Y)
+        logo_canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        
+        # Configurar o frame dentro do canvas
+        logo_window = logo_canvas.create_window((0, 0), window=logo_content_frame, anchor="nw")
+        
+        def on_logo_configure(event):
+            logo_canvas.itemconfig(logo_window, width=event.width)
+            logo_canvas.configure(scrollregion=logo_canvas.bbox("all"))
+        
+        logo_content_frame.bind("<Configure>", on_logo_configure)
+        logo_canvas.bind("<Configure>", lambda e: logo_canvas.configure(scrollregion=logo_canvas.bbox("all")))
+        
+        # Bind mouse wheel para scroll
+        def on_logo_mousewheel(event):
+            logo_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        logo_canvas.bind_all("<MouseWheel>", on_logo_mousewheel)
+        
+        top = Frame(logo_content_frame, bg="#ffffff")
         top.pack(fill=X)
         ttk.Label(top, text="Logo", style="Title.TLabel").pack(anchor="w")
         ttk.Label(top, text="Cole uma imagem PNG para aparecer por cima do vídeo e escolha o canto e o tamanho.", style="Muted.TLabel").pack(anchor="w", pady=(4, 22))
 
-        controls = Frame(parent, bg="#ffffff")
+        controls = Frame(logo_content_frame, bg="#ffffff")
         controls.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 18))
-        preview_box = Frame(parent, bg="#ffffff")
+        preview_box = Frame(logo_content_frame, bg="#ffffff")
         preview_box.pack(side=RIGHT, fill=Y)
 
         Label(controls, text="Arquivo PNG da logo", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
@@ -1025,12 +1051,19 @@ class VideoGeneratorApp:
         lang = lang_mapping.get(language, "pt")
         
         try:
+            # Melhora a qualidade do TTS adicionando pausas naturais e limpando o texto
+            # Remove múltiplos espaços e normaliza pontuação para melhor fluência
+            cleaned_text = re.sub(r'\s+', ' ', text).strip()
+            # Adiciona pausa suave entre frases para evitar voz travada
+            cleaned_text = re.sub(r'([.!?])\s*', r'\1 ', cleaned_text)
+            
             # Gera áudio com XTTS
             self.xtts_model.tts_to_file(
-                text=text,
+                text=cleaned_text,
                 speaker_wav=speaker_wav,
                 language=lang,
-                file_path=str(output_path)
+                file_path=str(output_path),
+                speed=1.0  # Velocidade normal para melhor clareza
             )
             
             self._queue_status(f"Áudio XTTS gerado: {text[:50]}...", step=True)
@@ -1039,7 +1072,6 @@ class VideoGeneratorApp:
             raise RuntimeError("Memória insuficiente para gerar áudio XTTS.")
         except Exception as e:
             raise RuntimeError(f"Erro ao gerar áudio com XTTS: {e}")
-            self.message_queue.put(("error", f"Erro ao gerar áudios: {e}"))
 
     def _build_music_tab(self, parent: Frame) -> None:
         top = Frame(parent, bg="#ffffff")
@@ -2108,10 +2140,15 @@ class VideoGeneratorApp:
         margin_v = self._ass_margin_v()
         spacing = -max(0, int(font_size * 0.10) - line_spacing)
         speech_duration = max(0.1, min(speech_duration, clip_duration))
-        word_duration = max(speech_duration / len(words), 0.04)
+        
+        # Ajusta o timer das legendas para sincronizar melhor com o áudio
+        # Reduz um pequeno offset para compensar o atraso na fala
+        timing_offset = 0.08  # 80ms de antecipação para sincronização
+        word_duration = max((speech_duration - timing_offset) / len(words), 0.04)
+        
         events: list[str] = []
         for index in range(len(words)):
-            start = index * word_duration
+            start = max(0, index * word_duration - timing_offset / 2)
             end = min((index + 1) * word_duration, speech_duration)
             if end <= start:
                 end = start + 0.05
