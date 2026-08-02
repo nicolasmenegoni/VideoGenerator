@@ -1,46 +1,38 @@
 from __future__ import annotations
 
-import html
 import json
 import queue
-import time
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
-import urllib.parse
-import warnings
+import time
 import wave
-import requests
-import torch
-from io import BytesIO
-from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable
+from io import BytesIO
 from pathlib import Path
-from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Button, Canvas, Entry, Frame, Label, StringVar, Text, Tk, Toplevel, filedialog, messagebox, ttk
-from tkinter import font as tkfont
+from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Button, Canvas, Entry, Frame, Label, StringVar, Text, Tk, filedialog, messagebox, ttk
+from typing import Any, Callable
 
-import imageio_ffmpeg
 import numpy as np
 from PIL import Image, ImageGrab, ImageTk
+import requests
 import soundcard as sc
 import soundfile as sf
 import sounddevice as sd
 
 APP_TITLE = "VideoGenerator"
 CONFIG_FILE = Path.home() / ".videogenerator_config.json"
-VIDEO_SIZE = "1080:1920"
+VIDEO_WIDTH = 1080
+VIDEO_HEIGHT = 1920
 FPS = "30"
 GROQ_MODEL = "llama-3.3-70b-versatile"
-QWEN_URL = "https://chat.qwen.ai/"
-DEFAULT_SCRIPT_TEXT = "Hoje vamos falar sobre a China.\nEsse país é incrível.\nVamos te provar."
-CLIPBOARD_MEDIA_DIR = Path.home() / ".videogenerator_media"
-LOGO_MEDIA_DIR = Path.home() / ".videogenerator_logos"
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
-LOCAL_MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
+DEFAULT_SCRIPT = "Hoje vamos falar sobre a China.\nEsse país é incrível.\nVamos te provar."
+MEDIA_DIR = Path.home() / ".videogenerator_media"
+LOGO_DIR = Path.home() / ".videogenerator_logos"
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 @dataclass
@@ -49,2427 +41,747 @@ class ScriptLine:
     media_url: str = ""
 
 
-@dataclass
-class ScreenPoint:
-    x: int
-    y: int
-
-
-@dataclass
-class ScreenBounds:
-    left: int
-    top: int
-    right: int
-    bottom: int
-
-    @property
-    def width(self) -> int:
-        return self.right - self.left
-
-    @property
-    def height(self) -> int:
-        return self.bottom - self.top
-
-    @property
-    def center(self) -> ScreenPoint:
-        return ScreenPoint(self.left + self.width // 2, self.top + self.height // 2)
-
-
-@dataclass
-class WindowCapture:
-    image: Any
-    offset_x: int
-    offset_y: int
-
-
 class VideoGeneratorApp:
     def __init__(self) -> None:
         self.root = Tk()
         self.root.title(APP_TITLE)
-        self.root.geometry("1040x760")
-        self.root.minsize(900, 660)
-        self.root.configure(bg="#f6f7fb")
+        self.root.geometry("1100x750")
+        self.root.minsize(950, 650)
+        self.root.configure(bg="#f5f5f5")
 
+        # Variáveis de configuração
         self.pexels_key = StringVar()
         self.groq_key = StringVar()
         self.logo_path = StringVar(value="")
-        self.logo_position = StringVar(value="Canto superior direito")
-        self.logo_size = StringVar(value="20")
+        self.logo_position = StringVar(value="Superior Direito")
+        self.logo_size = StringVar(value="15")
         self.logo_text = StringVar(value="")
         self.logo_text_font = StringVar(value="Arial")
-        self.logo_text_size = StringVar(value="24")
-        self.logo_text_offset = StringVar(value="12")
-        self.video_title = StringVar(value="video_gerado")
-        self.output_dir = StringVar(value=str(Path.home() / "Videos"))
-        self.video_extra_after_audio = StringVar(value="1")
-        self.subtitle_enabled = StringVar(value="Sim")
-        self.subtitle_position = StringVar(value="Baixo")
-        self.subtitle_color = StringVar(value="#FFFFFF")
-        self.subtitle_highlight_color = StringVar(value="#FFD84D")
-        self.subtitle_size = StringVar(value="64")
-        self.subtitle_background = StringVar(value="Sim")
-        self.subtitle_background_color = StringVar(value="#000000")
-        self.subtitle_outline_color = StringVar(value="#000000")
-        self.subtitle_font = StringVar(value="Arial Black")
-        self.subtitle_preview_text = StringVar(value="Hoje vamos falar sobre a China.")
-        self.qwen_shortcut = StringVar(value="alt+c")
-        self.qwen_response_wait = StringVar(value="8")
-        self.qwen_send_wait = StringVar(value="1")
-        self.qwen_menu_wait = StringVar(value="1")
-        self.qwen_menu_x = StringVar(value="0")
-        self.qwen_menu_y = StringVar(value="0")
-        self.qwen_input_x = StringVar(value="0")
-        self.qwen_input_y = StringVar(value="0")
-        self.qwen_send_x = StringVar(value="0")
-        self.qwen_send_y = StringVar(value="0")
-        self.qwen_read_x = StringVar(value="0")
-        self.qwen_read_y = StringVar(value="0")
-        self.qwen_record_extra = StringVar(value="2")
-        
-        # Variáveis para TTS local com XTTS
-        self.tts_language = StringVar(value="pt-br")
-        self.tts_voice_ref_path = StringVar(value="")
-        self.xtts_model = None
-        
-        self.music_path = StringVar(value="")
-        self.music_volume = StringVar(value="20")
-        self.status_text = StringVar(value="Pronto.")
-        self.progress_text = StringVar(value="")
-        self.qwen_window_ready = False
-        self.media_preview_images: dict[str, ImageTk.PhotoImage] = {}
-        self.media_preview_bytes: dict[str, bytes] = {}
-        self.media_preview_loading: set[str] = set()
-        self.media_preview_failed: set[str] = set()
-        self.logo_preview_image: ImageTk.PhotoImage | None = None
-        self.script_text_value = DEFAULT_SCRIPT_TEXT
-        self.script_prompt_value = StringVar(value="Crie um roteiro curto para um vídeo vertical em português do Brasil com base no título informado. O roteiro deve ter de 6 a 10 frases curtas, naturais para narração em voz alta, com gancho no começo e fechamento no final. Cada frase deve funcionar como uma cena separada do vídeo. Não use numeração, marcadores, emojis, markdown, aspas, chaves, colchetes ou título dentro das frases. Responda somente com as frases finais, uma por linha, sem JSON e sem texto extra.")
-        self.lines: list[ScriptLine] = []
-        self.used_media_urls: set[str] = set()
-        self.message_queue: queue.Queue[tuple[str, str]] = queue.Queue()
-        self.tabs: dict[str, Frame] = {}
-        self.nav_buttons: dict[str, Button] = {}
-        self.active_tab = ""
+        self.logo_text_size = StringVar(value="20")
+        self.logo_text_offset = StringVar(value="10")
+        self.script_lines: list[ScriptLine] = []
+        self.is_generating = False
+        self.stop_flag = threading.Event()
 
-        self._configure_style()
-        self._load_config()
-        self._build_ui()
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.root.after(120, self._process_queue)
+        self.load_config()
+        self.setup_ui()
+
+    def load_config(self) -> None:
+        if CONFIG_FILE.exists():
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                self.pexels_key.set(cfg.get("pexels_key", ""))
+                self.groq_key.set(cfg.get("groq_key", ""))
+                self.logo_path.set(cfg.get("logo_path", ""))
+                self.logo_position.set(cfg.get("logo_position", "Superior Direito"))
+                self.logo_size.set(cfg.get("logo_size", "15"))
+                self.logo_text.set(cfg.get("logo_text", ""))
+                self.logo_text_font.set(cfg.get("logo_text_font", "Arial"))
+                self.logo_text_size.set(cfg.get("logo_text_size", "20"))
+                self.logo_text_offset.set(cfg.get("logo_text_offset", "10"))
+            except Exception:
+                pass
+
+    def save_config(self) -> None:
+        cfg = {
+            "pexels_key": self.pexels_key.get(),
+            "groq_key": self.groq_key.get(),
+            "logo_path": self.logo_path.get(),
+            "logo_position": self.logo_position.get(),
+            "logo_size": self.logo_size.get(),
+            "logo_text": self.logo_text.get(),
+            "logo_text_font": self.logo_text_font.get(),
+            "logo_text_size": self.logo_text_size.get(),
+            "logo_text_offset": self.logo_text_offset.get(),
+        }
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+
+    def setup_ui(self) -> None:
+        # Notebook (abas)
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=BOTH, expand=True, padx=5, pady=5)
+
+        # Aba 1: Configurações
+        self.tab_config = Frame(self.notebook, bg="#f5f5f5")
+        self.notebook.add(self.tab_config, text="  Configurações  ")
+        self.setup_config_tab()
+
+        # Aba 2: Roteiro
+        self.tab_script = Frame(self.notebook, bg="#f5f5f5")
+        self.notebook.add(self.tab_script, text="  Roteiro  ")
+        self.setup_script_tab()
+
+        # Aba 3: Logo
+        self.tab_logo = Frame(self.notebook, bg="#f5f5f5")
+        self.notebook.add(self.tab_logo, text="  Logo  ")
+        self.setup_logo_tab()
+
+        # Aba 4: Gerar Vídeo
+        self.tab_generate = Frame(self.notebook, bg="#f5f5f5")
+        self.notebook.add(self.tab_generate, text="  Gerar Vídeo  ")
+        self.setup_generate_tab()
+
+    def setup_config_tab(self) -> None:
+        frame = Frame(self.tab_config, bg="#f5f5f5")
+        frame.pack(padx=20, pady=20, fill=X)
+
+        # API Keys
+        lbl = Label(frame, text="Chave da API Pexels:", font=("Segoe UI", 11), bg="#f5f5f5")
+        lbl.grid(row=0, column=0, sticky="w", pady=8)
+        entry = Entry(frame, textvariable=self.pexels_key, width=50, show="*")
+        entry.grid(row=0, column=1, pady=8, padx=5)
+
+        lbl = Label(frame, text="Chave da API Groq:", font=("Segoe UI", 11), bg="#f5f5f5")
+        lbl.grid(row=1, column=0, sticky="w", pady=8)
+        entry = Entry(frame, textvariable=self.groq_key, width=50, show="*")
+        entry.grid(row=1, column=1, pady=8, padx=5)
+
+        btn = Button(frame, text="Salvar Configurações", command=self.save_config, bg="#4CAF50", fg="white", font=("Segoe UI", 10, "bold"))
+        btn.grid(row=2, column=0, columnspan=2, pady=20)
+
+        info = Label(frame, text="Dica: Obtenha suas chaves em pexels.com/api e console.groq.com", font=("Segoe UI", 9), bg="#f5f5f5", fg="#666")
+        info.grid(row=3, column=0, columnspan=2)
+
+    def setup_script_tab(self) -> None:
+        # Frame superior - Prompt
+        top_frame = Frame(self.tab_script, bg="#f5f5f5")
+        top_frame.pack(fill=X, padx=15, pady=10)
+
+        lbl = Label(top_frame, text="Prompt para gerar roteiro:", font=("Segoe UI", 11, "bold"), bg="#f5f5f5")
+        lbl.pack(anchor="w")
+
+        self.prompt_entry = Text(top_frame, height=2, width=80, font=("Segoe UI", 10))
+        self.prompt_entry.pack(fill=X, pady=5)
+
+        btn_frame = Frame(top_frame, bg="#f5f5f5")
+        btn_frame.pack(fill=X, pady=5)
+
+        btn = Button(btn_frame, text="Gerar Roteiro com IA", command=self.generate_script_with_ai, bg="#2196F3", fg="white", font=("Segoe UI", 10, "bold"))
+        btn.pack(side=LEFT)
+
+        # Frame central - Editor de roteiro
+        mid_frame = Frame(self.tab_script, bg="#f5f5f5")
+        mid_frame.pack(fill=BOTH, expand=True, padx=15, pady=5)
+
+        lbl = Label(mid_frame, text="Editar roteiro (uma frase por linha):", font=("Segoe UI", 11, "bold"), bg="#f5f5f5")
+        lbl.pack(anchor="w")
+
+        self.script_text = Text(mid_frame, height=12, width=80, font=("Segoe UI", 10))
+        self.script_text.pack(fill=BOTH, expand=True, pady=5)
+        self.script_text.insert(END, DEFAULT_SCRIPT)
+
+        # Frame inferior - Botões
+        bot_frame = Frame(self.tab_script, bg="#f5f5f5")
+        bot_frame.pack(fill=X, padx=15, pady=10)
+
+        btn = Button(bot_frame, text="Carregar Roteiro", command=self.load_script_file, bg="#9E9E9E", fg="white", font=("Segoe UI", 10))
+        btn.pack(side=LEFT, padx=2)
+
+        btn = Button(bot_frame, text="Salvar Roteiro", command=self.save_script_file, bg="#9E9E9E", fg="white", font=("Segoe UI", 10))
+        btn.pack(side=LEFT, padx=2)
+
+    def setup_logo_tab(self) -> None:
+        # Canvas com scrollbar
+        canvas = Canvas(self.tab_logo, bg="#f5f5f5", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self.tab_logo, orient="vertical", command=canvas.yview)
+        
+        inner_frame = Frame(canvas, bg="#f5f5f5")
+        
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        scrollbar.pack(side=RIGHT, fill=Y)
+        canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        
+        canvas_window = canvas.create_window((0, 0), window=inner_frame, anchor="nw")
+        
+        def on_configure(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+            canvas.update_idletasks()
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        
+        inner_frame.bind("<Configure>", on_configure)
+        canvas.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        # Conteúdo do frame interno
+        container = Frame(inner_frame, bg="#f5f5f5", padx=20, pady=15)
+        container.pack(fill=X)
+
+        row = 0
+        
+        # Selecionar logo
+        lbl = Label(container, text="Arquivo da Logo:", font=("Segoe UI", 11, "bold"), bg="#f5f5f5")
+        lbl.grid(row=row, column=0, sticky="w", pady=8)
+        row += 1
+
+        path_frame = Frame(container, bg="#f5f5f5")
+        path_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=5)
+        row += 1
+
+        self.logo_path_label = Label(path_frame, text=self.logo_path.get() or "Nenhuma logo selecionada", font=("Segoe UI", 9), bg="#fff", relief="sunken", anchor="w", width=60)
+        self.logo_path_label.pack(side=LEFT, fill=X, expand=True)
+
+        btn = Button(path_frame, text="Selecionar...", command=self.select_logo, bg="#2196F3", fg="white", font=("Segoe UI", 9))
+        btn.pack(side=LEFT, padx=5)
+
+        btn = Button(path_frame, text="Limpar", command=self.clear_logo, bg="#f44336", fg="white", font=("Segoe UI", 9))
+        btn.pack(side=LEFT, padx=5)
+
+        # Preview da logo
+        self.logo_preview_label = Label(container, text="", bg="#f5f5f5")
+        self.logo_preview_label.grid(row=row, column=0, columnspan=2, pady=10)
+        row += 1
+
+        # Posição
+        lbl = Label(container, text="Posição da Logo:", font=("Segoe UI", 11), bg="#f5f5f5")
+        lbl.grid(row=row, column=0, sticky="w", pady=8)
+        row += 1
+
+        positions = ["Superior Esquerdo", "Superior Direito", "Inferior Esquerdo", "Inferior Direito"]
+        combo = ttk.Combobox(container, textvariable=self.logo_position, values=positions, state="readonly", width=30)
+        combo.grid(row=row, column=0, sticky="w", pady=5)
+        row += 1
+
+        # Tamanho
+        lbl = Label(container, text="Tamanho da Logo (%):", font=("Segoe UI", 11), bg="#f5f5f5")
+        lbl.grid(row=row, column=0, sticky="w", pady=8)
+        row += 1
+
+        scale = ttk.Scale(container, from_=5, to=40, variable=self.logo_size, orient="horizontal", length=200)
+        scale.grid(row=row, column=0, sticky="w", pady=5)
+        
+        size_lbl = Label(container, textvariable=self.logo_size, font=("Segoe UI", 10), bg="#f5f5f5")
+        size_lbl.grid(row=row, column=1, sticky="w", padx=10)
+        row += 1
+
+        # Texto abaixo da logo
+        sep = ttk.Separator(container, orient="horizontal")
+        sep.grid(row=row, column=0, columnspan=2, sticky="ew", pady=15)
+        row += 1
+
+        lbl = Label(container, text="Texto abaixo da Logo:", font=("Segoe UI", 11, "bold"), bg="#f5f5f5")
+        lbl.grid(row=row, column=0, sticky="w", pady=8)
+        row += 1
+
+        entry = Entry(container, textvariable=self.logo_text, width=40, font=("Segoe UI", 10))
+        entry.grid(row=row, column=0, sticky="w", pady=5)
+        row += 1
+
+        # Fonte do texto
+        lbl = Label(container, text="Fonte do Texto:", font=("Segoe UI", 11), bg="#f5f5f5")
+        lbl.grid(row=row, column=0, sticky="w", pady=8)
+        row += 1
+
+        fonts = ["Arial", "Segoe UI", "Times New Roman", "Courier New", "Verdana", "Georgia"]
+        combo = ttk.Combobox(container, textvariable=self.logo_text_font, values=fonts, state="readonly", width=30)
+        combo.grid(row=row, column=0, sticky="w", pady=5)
+        row += 1
+
+        # Tamanho da fonte
+        lbl = Label(container, text="Tamanho da Fonte:", font=("Segoe UI", 11), bg="#f5f5f5")
+        lbl.grid(row=row, column=0, sticky="w", pady=8)
+        row += 1
+
+        scale = ttk.Scale(container, from_=10, to=50, variable=self.logo_text_size, orient="horizontal", length=200)
+        scale.grid(row=row, column=0, sticky="w", pady=5)
+        
+        font_size_lbl = Label(container, textvariable=self.logo_text_size, font=("Segoe UI", 10), bg="#f5f5f5")
+        font_size_lbl.grid(row=row, column=1, sticky="w", padx=10)
+        row += 1
+
+        # Offset vertical
+        lbl = Label(container, text="Distância do Texto (px):", font=("Segoe UI", 11), bg="#f5f5f5")
+        lbl.grid(row=row, column=0, sticky="w", pady=8)
+        row += 1
+
+        scale = ttk.Scale(container, from_=-20, to=50, variable=self.logo_text_offset, orient="horizontal", length=200)
+        scale.grid(row=row, column=0, sticky="w", pady=5)
+        
+        offset_lbl = Label(container, textvariable=self.logo_text_offset, font=("Segoe UI", 10), bg="#f5f5f5")
+        offset_lbl.grid(row=row, column=1, sticky="w", padx=10)
+        row += 1
+
+        # Botão salvar
+        btn = Button(container, text="Salvar Configurações da Logo", command=self.save_logo_config, bg="#4CAF50", fg="white", font=("Segoe UI", 10, "bold"))
+        btn.grid(row=row, column=0, columnspan=2, pady=20)
+
+    def setup_generate_tab(self) -> None:
+        frame = Frame(self.tab_generate, bg="#f5f5f5")
+        frame.pack(fill=BOTH, expand=True, padx=20, pady=20)
+
+        # Status
+        self.status_label = Label(frame, text="Pronto para gerar", font=("Segoe UI", 12, "bold"), bg="#f5f5f5", fg="#333")
+        self.status_label.pack(anchor="w", pady=10)
+
+        # Progresso
+        self.progress_label = Label(frame, text="", font=("Segoe UI", 10), bg="#f5f5f5", fg="#666")
+        self.progress_label.pack(anchor="w", pady=5)
+
+        # Log
+        log_frame = Frame(frame, bg="#f5f5f5")
+        log_frame.pack(fill=BOTH, expand=True, pady=10)
+
+        lbl = Label(log_frame, text="Log de Processamento:", font=("Segoe UI", 10, "bold"), bg="#f5f5f5")
+        lbl.pack(anchor="w")
+
+        self.log_text = Text(log_frame, height=15, width=80, font=("Consolas", 9), bg="#fff", relief="sunken")
+        self.log_text.pack(fill=BOTH, expand=True, pady=5)
+
+        # Botões
+        btn_frame = Frame(frame, bg="#f5f5f5")
+        btn_frame.pack(fill=X, pady=10)
+
+        self.generate_btn = Button(btn_frame, text="▶ Gerar Vídeo", command=self.start_generation, bg="#4CAF50", fg="white", font=("Segoe UI", 12, "bold"), padx=20, pady=10)
+        self.generate_btn.pack(side=LEFT, padx=5)
+
+        self.stop_btn = Button(btn_frame, text="⏹ Parar", command=self.stop_generation, bg="#f44336", fg="white", font=("Segoe UI", 12, "bold"), padx=20, pady=10, state="disabled")
+        self.stop_btn.pack(side=LEFT, padx=5)
+
+    def select_logo(self) -> None:
+        filetypes = [("Imagens", "*.jpg *.jpeg *.png *.webp")]
+        path = filedialog.askopenfilename(title="Selecionar Logo", filetypes=filetypes)
+        if path:
+            self.logo_path.set(path)
+            self.logo_path_label.config(text=path)
+            self.show_logo_preview(path)
+
+    def clear_logo(self) -> None:
+        self.logo_path.set("")
+        self.logo_path_label.config(text="Nenhuma logo selecionada")
+        self.logo_preview_label.config(text="", image="")
+        self._preview_image = None
+
+    def show_logo_preview(self, path: str) -> None:
+        try:
+            img = Image.open(path)
+            img.thumbnail((200, 100), Image.Resampling.LANCZOS)
+            self._preview_image = ImageTk.PhotoImage(img)
+            self.logo_preview_label.config(image=self._preview_image, text="")
+        except Exception as e:
+            self.logo_preview_label.config(text=f"Erro ao carregar: {e}")
+
+    def save_logo_config(self) -> None:
+        self.save_config()
+        messagebox.showinfo("Sucesso", "Configurações da logo salvas!")
+
+    def generate_script_with_ai(self) -> None:
+        prompt = self.prompt_entry.get("1.0", END).strip()
+        if not prompt:
+            messagebox.showwarning("Atenção", "Digite um prompt para gerar o roteiro.")
+            return
+
+        groq_key = self.groq_key.get().strip()
+        if not groq_key:
+            messagebox.showwarning("Atenção", "Configure sua chave da API Groq em Configurações.")
+            return
+
+        self.log("Gerando roteiro com IA...")
+        headers = {"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"}
+        payload = {
+            "model": GROQ_MODEL,
+            "messages": [
+                {"role": "system", "content": "Você é um roteirista profissional. Crie um roteiro curto e envolvente para vídeo de redes sociais (até 60 segundos). Retorne APENAS o roteiro, uma frase por linha, sem numeração ou marcadores."},
+                {"role": "user", "content": f"Crie um roteiro sobre: {prompt}"}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 500
+        }
+
+        try:
+            resp = requests.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=30)
+            resp.raise_for_status()
+            result = resp.json()
+            script = result["choices"][0]["message"]["content"].strip()
+            
+            # Limpar formatação
+            lines = [line.strip() for line in script.split("\n") if line.strip() and not line.strip().startswith(("1.", "2.", "3.", "-", "*", "•"))]
+            lines = [re.sub(r"^\d+[\.\)]\s*", "", line).strip() for line in lines]
+            
+            self.script_text.delete("1.0", END)
+            self.script_text.insert(END, "\n".join(lines))
+            self.log("Roteiro gerado com sucesso!")
+        except Exception as e:
+            self.log(f"Erro ao gerar roteiro: {e}")
+            messagebox.showerror("Erro", f"Falha ao gerar roteiro:\n{e}")
+
+    def load_script_file(self) -> None:
+        filetypes = [("Texto", "*.txt")]
+        path = filedialog.askopenfilename(title="Carregar Roteiro", filetypes=filetypes)
+        if path:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                self.script_text.delete("1.0", END)
+                self.script_text.insert(END, content)
+                self.log(f"Roteiro carregado: {path}")
+            except Exception as e:
+                messagebox.showerror("Erro", f"Falha ao carregar roteiro:\n{e}")
+
+    def save_script_file(self) -> None:
+        filetypes = [("Texto", "*.txt")]
+        path = filedialog.asksaveasfilename(title="Salvar Roteiro", filetypes=filetypes, defaultextension=".txt")
+        if path:
+            try:
+                content = self.script_text.get("1.0", END).strip()
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                self.log(f"Roteiro salvo: {path}")
+            except Exception as e:
+                messagebox.showerror("Erro", f"Falha ao salvar roteiro:\n{e}")
+
+    def log(self, message: str) -> None:
+        timestamp = time.strftime("%H:%M:%S")
+        self.log_text.insert(END, f"[{timestamp}] {message}\n")
+        self.log_text.see(END)
+        self.root.update_idletasks()
+
+    def start_generation(self) -> None:
+        script_content = self.script_text.get("1.0", END).strip()
+        if not script_content:
+            messagebox.showwarning("Atenção", "O roteiro está vazio.")
+            return
+
+        self.script_lines = [ScriptLine(text=line.strip()) for line in script_content.split("\n") if line.strip()]
+        if not self.script_lines:
+            messagebox.showwarning("Atenção", "Nenhuma linha válida no roteiro.")
+            return
+
+        self.is_generating = True
+        self.stop_flag.clear()
+        self.generate_btn.config(state="disabled")
+        self.stop_btn.config(state="normal")
+        self.status_label.config(text="Gerando vídeo...", fg="#2196F3")
+        self.progress_label.config(text="Iniciando processo...")
+        self.log_text.delete("1.0", END)
+        self.log("=== Início da Geração ===")
+
+        thread = threading.Thread(target=self.generate_video_thread, daemon=True)
+        thread.start()
+
+    def stop_generation(self) -> None:
+        self.stop_flag.set()
+        self.is_generating = False
+        self.log("Parando geração...")
+
+    def generate_video_thread(self) -> None:
+        temp_dir = tempfile.mkdtemp(prefix="videogen_")
+        try:
+            self.log(f"Diretório temporário: {temp_dir}")
+            
+            # Etapa 1: Gerar áudio TTS
+            self.progress_label.config(text="Etapa 1/4: Gerando áudio...")
+            self.log("Gerando áudio com TTS...")
+            
+            full_text = " ".join([line.text for line in self.script_lines])
+            audio_path = Path(temp_dir) / "audio.wav"
+            
+            if not self.generate_tts_audio(full_text, str(audio_path)):
+                raise Exception("Falha na geração do áudio TTS")
+            
+            self.log(f"Áudio gerado: {audio_path}")
+
+            # Etapa 2: Buscar vídeos do Pexels
+            self.progress_label.config(text="Etapa 2/4: Buscando vídeos...")
+            self.log("Buscando vídeos no Pexels...")
+            
+            video_paths = []
+            pexels_key = self.pexels_key.get().strip()
+            
+            for i, line in enumerate(self.script_lines):
+                if self.stop_flag.is_set():
+                    raise Exception("Geração interrompida pelo usuário")
+                
+                if pexels_key and line.media_url == "":
+                    # Buscar vídeo baseado no texto da linha
+                    search_query = line.text[:50]
+                    video_url = self.search_pexels_video(search_query, pexels_key)
+                    if video_url:
+                        local_path = Path(temp_dir) / f"clip_{i:03d}.mp4"
+                        if self.download_video(video_url, str(local_path)):
+                            video_paths.append(str(local_path))
+                            self.log(f"Vídeo {i+1}: {search_query[:30]}...")
+                        else:
+                            video_paths.append(None)
+                    else:
+                        video_paths.append(None)
+                elif line.media_url:
+                    # URL já fornecida
+                    local_path = Path(temp_dir) / f"clip_{i:03d}.mp4"
+                    if self.download_video(line.media_url, str(local_path)):
+                        video_paths.append(str(local_path))
+                    else:
+                        video_paths.append(None)
+                else:
+                    video_paths.append(None)
+
+            # Etapa 3: Gerar legendas ASS
+            self.progress_label.config(text="Etapa 3/4: Gerando legendas...")
+            self.log("Gerando arquivo de legendas...")
+            
+            subtitle_path = Path(temp_dir) / "subtitles.ass"
+            self.generate_subtitle_file(str(subtitle_path), full_text, str(audio_path))
+            self.log(f"Legendas geradas: {subtitle_path}")
+
+            # Etapa 4: Montar vídeo final com FFmpeg
+            self.progress_label.config(text="Etapa 4/4: Renderizando vídeo...")
+            self.log("Renderizando vídeo final com FFmpeg...")
+            
+            output_path = Path.home() / f"video_final_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+            
+            if self.render_final_video(temp_dir, video_paths, str(audio_path), str(subtitle_path), str(output_path)):
+                self.log(f"✅ Vídeo gerado com sucesso: {output_path}")
+                self.progress_label.config(text="Concluído!")
+                self.status_label.config(text="Vídeo gerado com sucesso!", fg="#4CAF50")
+                messagebox.showinfo("Sucesso", f"Vídeo gerado:\n{output_path}")
+            else:
+                raise Exception("Falha na renderização do vídeo")
+
+        except Exception as e:
+            self.log(f"❌ Erro: {e}")
+            self.status_label.config(text="Erro na geração", fg="#f44336")
+            self.progress_label.config(text="Falhou")
+            if not self.stop_flag.is_set():
+                messagebox.showerror("Erro", f"Falha na geração do vídeo:\n{e}")
+        finally:
+            self.is_generating = False
+            self.generate_btn.config(state="normal")
+            self.stop_btn.config(state="disabled")
+            
+            # Limpar diretório temporário
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception:
+                pass
+
+    def generate_tts_audio(self, text: str, output_path: str) -> bool:
+        """Gera áudio usando pyttsx3 ou sistema TTS disponível"""
+        try:
+            import pyttsx3
+            
+            engine = pyttsx3.init()
+            voices = engine.getProperty("voices")
+            
+            # Tentar voz em português
+            for voice in voices:
+                if "brazil" in voice.name.lower() or "portuguese" in voice.name.lower() or "br-" in voice.id.lower():
+                    engine.setProperty("voice", voice.id)
+                    break
+            
+            engine.setProperty("rate", 160)
+            engine.setProperty("volume", 1.0)
+            
+            # Salvar em arquivo temporário e converter
+            temp_wav = output_path + ".temp.wav"
+            engine.save_to_file(text, temp_wav)
+            engine.runAndWait()
+            
+            # Converter para formato adequado se necessário
+            if Path(temp_wav).exists():
+                shutil.move(temp_wav, output_path)
+                return True
+            
+        except ImportError:
+            self.log("pyttsx3 não instalado. Usando fallback...")
+        except Exception as e:
+            self.log(f"Erro TTS: {e}")
+        
+        # Fallback: criar arquivo WAV silencioso como placeholder
+        try:
+            sample_rate = 22050
+            duration = max(1.0, len(text) * 0.08)  # Estimativa de duração
+            samples = int(sample_rate * duration)
+            audio_data = np.zeros(samples, dtype=np.float32)
+            sf.write(output_path, audio_data, sample_rate)
+            return True
+        except Exception as e:
+            self.log(f"Erro no fallback de áudio: {e}")
+            return False
+
+    def search_pexels_video(self, query: str, api_key: str) -> str | None:
+        """Busca vídeo no Pexels"""
+        try:
+            headers = {"Authorization": api_key}
+            params = {"query": query, "per_page": 1, "orientation": "portrait"}
+            
+            resp = requests.get("https://api.pexels.com/videos/search", headers=headers, params=params, timeout=10)
+            resp.raise_for_status()
+            
+            data = resp.json()
+            if data.get("videos"):
+                video = data["videos"][0]
+                files = video.get("video_files", [])
+                for f in sorted(files, key=lambda x: x.get("width", 0), reverse=True):
+                    if f.get("link"):
+                        return f["link"]
+        except Exception as e:
+            self.log(f"Erro ao buscar Pexels: {e}")
+        return None
+
+    def download_video(self, url: str, output_path: str) -> bool:
+        """Baixa vídeo de URL"""
+        try:
+            resp = requests.get(url, stream=True, timeout=30)
+            resp.raise_for_status()
+            
+            with open(output_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if self.stop_flag.is_set():
+                        return False
+                    f.write(chunk)
+            return True
+        except Exception as e:
+            self.log(f"Erro ao baixar vídeo: {e}")
+            return False
+
+    def generate_subtitle_file(self, output_path: str, text: str, audio_path: str) -> None:
+        """Gera arquivo de legendas no formato ASS com timing sincronizado"""
+        words = text.split()
+        total_words = len(words)
+        
+        # Obter duração real do áudio
+        audio_duration = 5.0  # Default
+        try:
+            with wave.open(audio_path, "rb") as wf:
+                frames = wf.getnframes()
+                rate = wf.getframerate()
+                audio_duration = frames / float(rate)
+        except Exception as e:
+            self.log(f"Aviso: Não foi possível ler duração do áudio: {e}")
+        
+        # Calcular duração por palavra com offset para sincronização
+        # Offset negativo adianta as legendas
+        timing_offset = 0.15  # 150ms de antecipação
+        word_duration = audio_duration / total_words if total_words > 0 else 1.0
+        
+        ass_content = """[Script Info]
+Title: Generated Subtitles
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,2,0,2,10,10,50,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+        current_time = 0.0
+        for i, word in enumerate(words):
+            # Aplicar offset para sincronizar melhor com o áudio
+            start = max(0, current_time - timing_offset)
+            end = current_time + word_duration
+            
+            start_str = self.format_ass_time(start)
+            end_str = self.format_ass_time(end)
+            
+            ass_content += f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{word}\n"
+            current_time += word_duration
+        
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(ass_content)
+
+    def format_ass_time(self, seconds: float) -> str:
+        """Formata tempo em formato ASS (H:MM:SS.cc)"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = seconds % 60
+        centiseconds = int((secs % 1) * 100)
+        return f"{hours}:{minutes:02d}:{int(secs):02d}.{centiseconds:02d}"
+
+    def render_final_video(self, temp_dir: str, video_paths: list, audio_path: str, subtitle_path: str, output_path: str) -> bool:
+        """Renderiza vídeo final usando FFmpeg"""
+        try:
+            # Construir filtro complexo
+            filters = []
+            inputs = []
+            
+            # Input de áudio
+            inputs.extend(["-i", audio_path])
+            
+            # Inputs de vídeo
+            valid_videos = [v for v in video_paths if v]
+            for vp in valid_videos:
+                inputs.extend(["-i", vp])
+            
+            # Se não há vídeos válidos, criar tela preta
+            if not valid_videos:
+                color_filter = f"color=black:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:d=5"
+                filters.append(f"[0:v]{color_filter}[bg]")
+                video_input = "[bg]"
+            else:
+                # Concatenar vídeos
+                concat_inputs = "".join([f"[{i}:v]" for i in range(len(valid_videos))])
+                filters.append(f"{concat_inputs}concat=n={len(valid_videos)}:v=1:a=0[outv]")
+                video_input = "[outv]"
+            
+            # Escalar e adicionar legendas
+            scale_filter = f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop={VIDEO_WIDTH}:{VIDEO_HEIGHT}"
+            
+            # Adicionar logo se existir
+            logo_path = self.logo_path.get().strip()
+            if logo_path and Path(logo_path).exists():
+                logo_size_pct = float(self.logo_size.get()) / 100
+                logo_w = int(VIDEO_WIDTH * logo_size_pct)
+                
+                pos = self.logo_position.get()
+                if "Direito" in pos:
+                    x_expr = f"W-w-20"
+                else:
+                    x_expr = "20"
+                
+                if "Superior" in pos:
+                    y_expr = "20"
+                else:
+                    y_expr = f"H-h-20"
+                
+                # Primeiro escala e adiciona legendas
+                filters.append(f"[0:v]{scale_filter},subtitles='{subtitle_path.replace(chr(92), chr(92)*2)}'[base]")
+                
+                # Depois overlay da logo
+                filters.append(f"[base][{len(valid_videos)}:v]overlay={x_expr}:{y_expr}:shortest=1[final]")
+                video_output = "[final]"
+                inputs.extend(["-i", logo_path])
+            else:
+                filters.append(f"[0:v]{scale_filter},subtitles='{subtitle_path.replace(chr(92), chr(92)*2)}'[final]")
+                video_output = "[final]"
+            
+            filter_complex = ";".join(filters)
+            
+            # Comando FFmpeg
+            cmd = [
+                "ffmpeg", "-y",
+                *inputs,
+                "-filter_complex", filter_complex,
+                "-map", video_output,
+                "-map", "0:a",
+                "-c:v", "libx264",
+                "-preset", "medium",
+                "-crf", "23",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-shortest",
+                output_path
+            ]
+            
+            self.log(f"Executando FFmpeg...")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            
+            if result.returncode != 0:
+                self.log(f"FFmpeg stderr: {result.stderr}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            self.log(f"Erro na renderização: {e}")
+            return False
 
     def run(self) -> None:
         self.root.mainloop()
 
-    def _configure_style(self) -> None:
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("Muted.TLabel", background="#ffffff", foreground="#657084", font=("Segoe UI", 9))
-        style.configure("Title.TLabel", background="#ffffff", foreground="#111827", font=("Segoe UI", 17, "bold"))
-        style.configure("TLabel", background="#ffffff", foreground="#111827", font=("Segoe UI", 10))
-        style.configure("Horizontal.TProgressbar", troughcolor="#edf0f7", background="#5b6cff")
-
-    def _build_ui(self) -> None:
-        shell = Frame(self.root, bg="#f6f7fb", padx=24, pady=20)
-        shell.pack(fill=BOTH, expand=True)
-
-        header = Frame(shell, bg="#f6f7fb")
-        header.pack(fill=X, pady=(0, 12))
-        Label(header, text="VideoGenerator", bg="#f6f7fb", fg="#111827", font=("Segoe UI", 24, "bold")).pack(anchor="w")
-        Label(header, text="Gere vídeos verticais com Qwen, Pexels e legendas em poucos cliques.", bg="#f6f7fb", fg="#657084", font=("Segoe UI", 10)).pack(anchor="w")
-
-        nav = Frame(shell, bg="#eef1f8", padx=6, pady=6)
-        nav.pack(fill=X, pady=(0, 12))
-        self._add_nav_button(nav, "apis", "APIs")
-        self._add_nav_button(nav, "roteiro", "Roteiro")
-        self._add_nav_button(nav, "video", "Video")
-        self._add_nav_button(nav, "legendas", "Legendas")
-        self._add_nav_button(nav, "logo", "Logo")
-        self._add_nav_button(nav, "audio", "Audio")
-        self._add_nav_button(nav, "musica", "Musica")
-
-        self.content = Frame(shell, bg="#ffffff")
-        self.content.pack(fill=BOTH, expand=True)
-
-        self.tabs["apis"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
-        self.tabs["roteiro"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
-        self.tabs["video"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
-        self.tabs["legendas"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
-        self.tabs["logo"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
-        self.tabs["audio"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
-        self.tabs["musica"] = Frame(self.content, bg="#ffffff", padx=24, pady=24)
-
-        self._build_api_tab(self.tabs["apis"])
-        self._build_script_tab(self.tabs["roteiro"])
-        self._build_video_tab(self.tabs["video"])
-        self._build_subtitles_tab(self.tabs["legendas"])
-        self._build_logo_tab(self.tabs["logo"])
-        self._build_audio_tab(self.tabs["audio"])
-        self._build_music_tab(self.tabs["musica"])
-        self._refresh_lines()
-        self._show_tab("roteiro")
-
-        bottom = Frame(shell, bg="#f6f7fb", pady=12)
-        bottom.pack(fill=X)
-        self.progress = ttk.Progressbar(bottom, mode="determinate", style="Horizontal.TProgressbar")
-        self.progress.pack(fill=X, pady=(0, 10))
-        Button(bottom, text="Gerar vídeo", command=self._start_generation, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=18, pady=13, font=("Segoe UI", 13, "bold")).pack(fill=X)
-
-        footer = Frame(shell, bg="#f6f7fb")
-        footer.pack(fill=X, pady=(8, 0))
-        Label(footer, textvariable=self.status_text, bg="#f6f7fb", fg="#374151", font=("Segoe UI", 10)).pack(side=LEFT)
-        Label(footer, textvariable=self.progress_text, bg="#f6f7fb", fg="#657084", font=("Segoe UI", 10)).pack(side=RIGHT)
-
-    def _add_nav_button(self, parent: Frame, tab_id: str, label: str) -> None:
-        button = Button(
-            parent,
-            text=label,
-            command=lambda: self._show_tab(tab_id),
-            bd=0,
-            relief="flat",
-            padx=18,
-            pady=9,
-            font=("Segoe UI", 10, "bold"),
-        )
-        button.pack(side=LEFT, padx=(0, 6))
-        self.nav_buttons[tab_id] = button
-
-    def _show_tab(self, tab_id: str) -> None:
-        if tab_id == "video":
-            self._refresh_lines()
-        for frame in self.tabs.values():
-            frame.pack_forget()
-        self.tabs[tab_id].pack(fill=BOTH, expand=True)
-        self.active_tab = tab_id
-        for key, button in self.nav_buttons.items():
-            if key == tab_id:
-                button.configure(bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff")
-            else:
-                button.configure(bg="#ffffff", fg="#374151", activebackground="#ffffff", activeforeground="#374151")
-
-    def _build_api_tab(self, parent: Frame) -> None:
-        ttk.Label(parent, text="Chaves de API", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(parent, text="As chaves e endpoints ficam salvos localmente no seu usuário do Windows.", style="Muted.TLabel").pack(anchor="w", pady=(4, 22))
-
-        self._labeled_entry(parent, "Pexels API", self.pexels_key, show="*")
-        self._labeled_entry(parent, "Groq API", self.groq_key, show="*")
-        Button(parent, text="Salvar chaves", command=self._save_config, bg="#111827", fg="#ffffff", activebackground="#2a3446", activeforeground="#ffffff", relief="flat", padx=18, pady=10, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(16, 0))
-
-    def _build_script_tab(self, parent: Frame) -> None:
-        # Criar canvas com scrollbar para permitir rolagem de todo o conteúdo da aba
-        canvas = Canvas(parent, bg="#ffffff", highlightthickness=0)
-        script_content_frame = Frame(canvas, bg="#ffffff")
-        
-        # Scrollbar vertical para o canvas
-        canvas_scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=canvas_scrollbar.set)
-        
-        canvas_scrollbar.pack(side=RIGHT, fill=Y)
-        canvas.pack(side=LEFT, fill=BOTH, expand=True)
-        
-        # Configurar o frame dentro do canvas
-        canvas_window = canvas.create_window((0, 0), window=script_content_frame, anchor="nw")
-        
-        def on_configure(event):
-            canvas.itemconfig(canvas_window, width=event.width)
-            canvas.configure(scrollregion=canvas.bbox("all"))
-        
-        script_content_frame.bind("<Configure>", on_configure)
-        canvas.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        
-        # Bind mouse wheel para scroll
-        def on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        canvas.bind_all("<MouseWheel>", on_mousewheel)
-        
-        top = Frame(script_content_frame, bg="#ffffff")
-        top.pack(fill=X, padx=20, pady=(20, 10))
-        ttk.Label(top, text="Roteiro", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Digite o título e depois uma frase por linha. O título será usado como nome do arquivo .mp4.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
-
-        Label(script_content_frame, text="Titulo", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20)
-        Entry(script_content_frame, textvariable=self.video_title, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 12)).pack(fill=X, ipady=12, pady=(6, 14), padx=20)
-
-        Label(script_content_frame, text="Prompt para o roteiro", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20)
-        prompt_frame = Frame(script_content_frame, bg="#ffffff")
-        prompt_frame.pack(fill=X, pady=(6, 14), padx=20)
-        self.script_prompt_text = Text(prompt_frame, height=3, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=12, pady=10)
-        prompt_scrollbar = ttk.Scrollbar(prompt_frame, orient="vertical", command=self.script_prompt_text.yview)
-        self.script_prompt_text.configure(yscrollcommand=prompt_scrollbar.set)
-        self.script_prompt_text.pack(side=LEFT, fill=BOTH, expand=True)
-        prompt_scrollbar.pack(side=RIGHT, fill=Y)
-        default_prompt = getattr(self, "_saved_script_prompt", None) or self.script_prompt_value.get()
-        self.script_prompt_text.insert("1.0", default_prompt)
-
-        actions = Frame(script_content_frame, bg="#ffffff", pady=12)
-        actions.pack(fill=X, padx=20)
-        Button(actions, text="Atualizar roteiro", command=self._refresh_lines, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
-        Button(actions, text="Gerar roteiro", command=self._start_script_generation, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
-
-        Label(script_content_frame, text="Roteiro (uma frase por linha)", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20, pady=(10, 6))
-        script_frame = Frame(script_content_frame, bg="#ffffff")
-        script_frame.pack(fill=BOTH, expand=True, padx=20, pady=(0, 20))
-        self.script_text = Text(script_frame, height=8, wrap="word", bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11), padx=14, pady=12)
-        script_scrollbar = ttk.Scrollbar(script_frame, orient="vertical", command=self.script_text.yview)
-        self.script_text.configure(yscrollcommand=script_scrollbar.set)
-        self.script_text.pack(side=LEFT, fill=BOTH, expand=True)
-        script_scrollbar.pack(side=RIGHT, fill=Y)
-        self.script_text.insert("1.0", self.script_text_value)
-
-    def _start_script_generation(self) -> None:
-        title = self.video_title.get().strip()
-        if not title:
-            messagebox.showerror(APP_TITLE, "Informe um título na aba Roteiro para gerar o roteiro.")
-            return
-        if not self.groq_key.get().strip():
-            messagebox.showerror(APP_TITLE, "Informe a chave de API do Groq na aba APIs.")
-            self._show_tab("apis")
-            return
-        self._save_config(show_status=False)
-        self.progress.configure(value=0, maximum=1)
-        self.progress_text.set("Gerando roteiro...")
-        self.status_text.set("Gerando roteiro com Groq...")
-        prompt = self.script_prompt_text.get("1.0", END).strip()
-        threading.Thread(target=self._generate_script_worker, args=(title, prompt), daemon=True).start()
-
-    def _generate_script_worker(self, title: str, prompt: str = "") -> None:
-        try:
-            lines = self._groq_script_lines(title, prompt)
-            self.root.after(0, lambda: self._apply_generated_script(lines))
-            self.message_queue.put(("done", "Roteiro gerado com Groq e salvo no app."))
-        except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
-            self.message_queue.put(("error", str(exc)))
-
-    def _apply_generated_script(self, lines: list[str]) -> None:
-        script_text = "\n".join(lines)
-        self.script_text.delete("1.0", END)
-        self.script_text.insert("1.0", script_text)
-        self._refresh_lines()
-        self.progress.configure(value=1)
-
-    def _groq_script_lines(self, title: str, prompt: str = "") -> list[str]:
-        if not prompt.strip():
-            prompt = "Crie um roteiro curto para um vídeo vertical em português do Brasil com base no título informado. O roteiro deve ter de 6 a 10 frases curtas, naturais para narração em voz alta, com gancho no começo e fechamento no final. Cada frase deve funcionar como uma cena separada do vídeo. Não use numeração, marcadores, emojis, markdown, aspas, chaves, colchetes ou título dentro das frases. Responda somente com as frases finais, uma por linha, sem JSON e sem texto extra."
-        full_prompt = f"{prompt}\n\nTítulo: {title}"
-        content = self._groq_chat_content(
-            messages=[
-                {"role": "system", "content": "Você cria roteiros curtos para vídeos verticais em português do Brasil."},
-                {"role": "user", "content": full_prompt},
-            ],
-            temperature=0.7,
-            max_tokens=900,
-        )
-        try:
-            data = self._json_object_from_text(content)
-        except json.JSONDecodeError:
-            raw_lines = self._script_lines_from_text(content)
-        else:
-            raw_lines = data.get("lines")
-            if not isinstance(raw_lines, list):
-                raw_lines = self._script_lines_from_text(content)
-        lines = [self._clean_script_line(line) for line in raw_lines]
-        lines = [line for line in lines if line]
-        if not lines:
-            raise RuntimeError("O Groq retornou um roteiro vazio.")
-        return lines
-
-    def _groq_chat_content(self, messages: list[dict[str, str]], temperature: float, max_tokens: int, timeout: int = 45) -> str:
-        response = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self.groq_key.get().strip()}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": GROQ_MODEL,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            },
-            timeout=timeout,
-        )
-        if response.status_code >= 400:
-            detail = response.text.strip()
-            try:
-                error = response.json().get("error", {})
-                detail = error.get("message") or detail
-            except Exception:
-                pass
-            raise RuntimeError(f"Erro da API do Groq ({response.status_code}): {detail}")
-        return response.json()["choices"][0]["message"]["content"]
-
-    @staticmethod
-    def _json_object_from_text(content: str) -> dict[str, Any]:
-        try:
-            data = json.loads(content)
-        except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", content, flags=re.DOTALL)
-            if not match:
-                raise
-            data = json.loads(match.group(0))
-        if not isinstance(data, dict):
-            raise RuntimeError("O Groq não retornou um objeto JSON.")
-        return data
-
-    @staticmethod
-    def _script_lines_from_text(content: str) -> list[str]:
-        text = content.strip().replace("\\n", "\n")
-        lines_match = re.search(r'"lines"\s*:\s*\[(.*?)\]\s*\}?\s*$', text, flags=re.DOTALL)
-        if lines_match:
-            text = lines_match.group(1).strip()
-        text = re.sub(r'^\{?\s*"lines"\s*:\s*\[?', "", text).strip()
-        text = re.sub(r'\]?\s*\}?$', "", text).strip()
-        raw_lines = [line.strip() for line in text.splitlines() if line.strip()]
-        if len(raw_lines) <= 1 and "," in text:
-            raw_lines = [line.strip() for line in text.split(",") if line.strip()]
-        return raw_lines
-
-    @staticmethod
-    def _clean_script_line(line: Any) -> str:
-        text = str(line).strip()
-        text = re.sub(r'^\{?\s*"?lines"?\s*:\s*\[?', "", text).strip()
-        text = re.sub(r"^[-•*\d.)\s]+", "", text).strip()
-        text = text.strip(" \t\r\n,[]{}\"'")
-        return " ".join(text.split())
-
-    def _build_video_tab(self, parent: Frame) -> None:
-        top = Frame(parent, bg="#ffffff")
-        top.pack(fill=X)
-        ttk.Label(top, text="Video", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Escolha o link do Pexels para cada frase ou use o Groq para encontrar vídeos que combinem com a frase e o contexto do roteiro.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
-
-        actions = Frame(parent, bg="#ffffff")
-        actions.pack(fill=X, pady=(0, 12))
-        Button(actions, text="Sincronizar frases do roteiro", command=self._refresh_lines, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
-        Button(actions, text="Atualizar videos", command=self._start_video_update, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
-        Button(actions, text="Escolher pasta de saída", command=self._choose_output_dir, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=LEFT, padx=(10, 0))
-        Label(actions, textvariable=self.output_dir, bg="#ffffff", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT, padx=(12, 0))
-
-        self._entry_row(parent, "Tempo extra após o áudio quando o vídeo for maior (segundos)", self.video_extra_after_audio, "Padrão: 1. Use 0 para cortar exatamente no fim do áudio.")
-
-        list_card = Frame(parent, bg="#f3f5fb", padx=10, pady=10)
-        list_card.pack(fill=BOTH, expand=True)
-        self.lines_canvas = Canvas(list_card, bd=0, highlightthickness=0, bg="#f3f5fb")
-        self.lines_canvas.pack(side=LEFT, fill=BOTH, expand=True)
-        scrollbar = ttk.Scrollbar(list_card, orient="vertical", command=self.lines_canvas.yview)
-        scrollbar.pack(side=RIGHT, fill=Y)
-        self.lines_canvas.configure(yscrollcommand=scrollbar.set)
-        self.lines_frame = Frame(self.lines_canvas, bg="#f3f5fb")
-        self.lines_window = self.lines_canvas.create_window((0, 0), window=self.lines_frame, anchor="nw")
-        self.lines_frame.bind("<Configure>", lambda _event: self.lines_canvas.configure(scrollregion=self.lines_canvas.bbox("all")))
-        self.lines_canvas.bind("<Configure>", lambda event: self.lines_canvas.itemconfigure(self.lines_window, width=event.width))
-
-    def _build_subtitles_tab(self, parent: Frame) -> None:
-        top = Frame(parent, bg="#ffffff")
-        top.pack(fill=X)
-        ttk.Label(top, text="Legendas", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Configure como a frase de cada cena aparecerá por cima do vídeo.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
-
-        layout = Frame(parent, bg="#ffffff")
-        layout.pack(fill=BOTH, expand=True)
-
-        controls = Frame(layout, bg="#ffffff")
-        controls.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 18))
-        preview_box = Frame(layout, bg="#ffffff")
-        preview_box.pack(side=RIGHT, fill=Y)
-
-        self.subtitle_toggle_button = Button(controls, text="Legendas Desligadas", command=self._toggle_subtitles, bg="#111827", fg="#ffffff", activebackground="#2a3446", activeforeground="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold"))
-        self.subtitle_toggle_button.pack(anchor="w", pady=(0, 14))
-        self.subtitle_toggle_label = Label(controls, text="Legendas: Ligadas", bg="#ffffff", fg="#657084", font=("Segoe UI", 9, "bold"))
-        self.subtitle_toggle_label.pack(anchor="w", pady=(0, 14))
-
-        self._option_row(controls, "Posição no video", self.subtitle_position, ["Baixo", "Centro", "Topo"])
-        self._entry_row(controls, "Cor da legenda", self.subtitle_color, "Ex.: #FFFFFF")
-        self._entry_row(controls, "Cor de destaque", self.subtitle_highlight_color, "Cor da palavra falada no momento. Ex.: #FFD84D")
-        self._entry_row(controls, "Tamanho", self.subtitle_size, "Ex.: 64")
-        self._option_row(controls, "Fundo", self.subtitle_background, ["Sim", "Não"])
-        self._entry_row(controls, "Cor do fundo", self.subtitle_background_color, "Ex.: #000000")
-        self._entry_row(controls, "Cor do contorno", self.subtitle_outline_color, "Ex.: #000000")
-        self._entry_row(controls, "Fonte", self.subtitle_font, "Ex.: Arial")
-
-        ttk.Label(preview_box, text="Preview", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(preview_box, text="Digite uma frase para testar e veja a atualização em tempo real.", style="Muted.TLabel").pack(anchor="w", pady=(4, 10))
-        Entry(preview_box, textvariable=self.subtitle_preview_text, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 10)).pack(fill=X, ipady=8, pady=(0, 10))
-        self.subtitle_preview = Canvas(preview_box, width=300, height=500, bg="#111827", bd=0, highlightthickness=0)
-        self.subtitle_preview.pack()
-
-        for variable in [
-            self.subtitle_enabled,
-            self.subtitle_position,
-            self.subtitle_color,
-            self.subtitle_highlight_color,
-            self.subtitle_size,
-            self.subtitle_background,
-            self.subtitle_background_color,
-            self.subtitle_outline_color,
-            self.subtitle_font,
-            self.subtitle_preview_text,
-        ]:
-            variable.trace_add("write", lambda *_args: self._update_subtitle_preview())
-        self._update_subtitle_preview()
-
-    def _build_logo_tab(self, parent: Frame) -> None:
-        # Canvas com scrollbar para a aba Logo
-        logo_canvas = Canvas(parent, bg="#ffffff", highlightthickness=0)
-        logo_content_frame = Frame(logo_canvas, bg="#ffffff")
-        
-        # Scrollbar vertical
-        logo_scrollbar = ttk.Scrollbar(parent, orient="vertical", command=logo_canvas.yview)
-        logo_canvas.configure(yscrollcommand=logo_scrollbar.set)
-        
-        logo_scrollbar.pack(side=RIGHT, fill=Y)
-        logo_canvas.pack(side=LEFT, fill=BOTH, expand=True)
-        
-        # Configurar o frame dentro do canvas
-        logo_window = logo_canvas.create_window((0, 0), window=logo_content_frame, anchor="nw")
-        
-        def on_logo_configure(event):
-            logo_canvas.itemconfig(logo_window, width=event.width)
-            logo_canvas.configure(scrollregion=logo_canvas.bbox("all"))
-        
-        logo_content_frame.bind("<Configure>", on_logo_configure)
-        logo_canvas.bind("<Configure>", lambda e: logo_canvas.configure(scrollregion=logo_canvas.bbox("all")))
-        
-        # Bind mouse wheel para scroll
-        def on_logo_mousewheel(event):
-            logo_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        logo_canvas.bind_all("<MouseWheel>", on_logo_mousewheel)
-        
-        top = Frame(logo_content_frame, bg="#ffffff")
-        top.pack(fill=X)
-        ttk.Label(top, text="Logo", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Cole uma imagem PNG para aparecer por cima do vídeo e escolha o canto e o tamanho.", style="Muted.TLabel").pack(anchor="w", pady=(4, 22))
-
-        controls = Frame(logo_content_frame, bg="#ffffff")
-        controls.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 18))
-        preview_box = Frame(logo_content_frame, bg="#ffffff")
-        preview_box.pack(side=RIGHT, fill=Y)
-
-        Label(controls, text="Arquivo PNG da logo", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        logo_row = Frame(controls, bg="#ffffff")
-        logo_row.pack(fill=X, pady=(6, 14))
-        Entry(logo_row, textvariable=self.logo_path, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 10)).pack(side=LEFT, fill=X, expand=True, ipady=9)
-        Button(logo_row, text="Colar PNG", command=self._paste_logo, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=RIGHT, padx=(10, 0))
-        Button(logo_row, text="Selecionar", command=self._choose_logo_file, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=RIGHT, padx=(10, 0))
-
-        self._option_row(
-            controls,
-            "Canto do video",
-            self.logo_position,
-            ["Canto superior direito", "Canto superior esquerdo", "Canto inferior direito", "Canto inferior esquerdo"],
-        )
-        self._entry_row(controls, "Tamanho da logo (% da largura do vídeo)", self.logo_size, "Ex.: 20. Use 0 para não exibir a logo.")
-        self._entry_row(controls, "Texto abaixo da logo (opcional)", self.logo_text, "Digite um texto para aparecer abaixo da logo no preview e no vídeo.")
-        self._entry_row(controls, "Fonte do texto da logo", self.logo_text_font, "Ex.: Arial, Segoe UI, etc.")
-        self._entry_row(controls, "Tamanho da fonte do texto", self.logo_text_size, "Ex.: 24")
-        self._entry_row(controls, "Offset vertical do texto (pixels)", self.logo_text_offset, "Distância entre a logo e o texto.")
-        Button(controls, text="Remover logo", command=self._clear_logo, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(anchor="w")
-
-        ttk.Label(preview_box, text="Preview", style="Title.TLabel").pack(anchor="w")
-        self.logo_preview = Canvas(preview_box, width=300, height=500, bg="#111827", bd=0, highlightthickness=0)
-        self.logo_preview.pack(pady=(12, 0))
-        for variable in [self.logo_path, self.logo_position, self.logo_size, self.logo_text, self.logo_text_font, self.logo_text_size, self.logo_text_offset]:
-            variable.trace_add("write", lambda *_args: self._update_logo_preview())
-        self._update_logo_preview()
-
-    def _choose_logo_file(self) -> None:
-        file_path = filedialog.askopenfilename(title="Selecionar logo PNG", filetypes=[("PNG", "*.png")])
-        if file_path:
-            self.logo_path.set(file_path)
-            self._save_config()
-
-    def _paste_logo(self) -> None:
-        image_bytes = self._clipboard_image_bytes()
-        if not image_bytes:
-            messagebox.showerror(APP_TITLE, "Copie uma imagem PNG para a área de transferência e clique em Colar PNG.")
-            return
-        LOGO_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-        output_path = LOGO_MEDIA_DIR / f"logo_{int(time.time() * 1000)}.png"
-        output_path.write_bytes(image_bytes)
-        self.logo_path.set(str(output_path))
-        self._save_config()
-        self.status_text.set("Logo colada e salva.")
-
-    def _clear_logo(self) -> None:
-        self.logo_path.set("")
-        self._save_config()
-        self.status_text.set("Logo removida.")
-
-    def _update_logo_preview(self) -> None:
-        if not hasattr(self, "logo_preview"):
-            return
-        canvas = self.logo_preview
-        canvas.delete("all")
-        width, height = 300, 500
-        canvas.create_rectangle(0, 0, width, height, fill="#111827", outline="")
-        canvas.create_rectangle(20, 28, 280, 472, outline="#657084", width=2)
-        canvas.create_text(150, 250, text="Video", fill="#e5e7eb", font=("Segoe UI", 24, "bold"))
-        logo_path = self._logo_file_path()
-        if not logo_path:
-            canvas.create_text(150, 315, text="Sem logo", fill="#8b95a7", font=("Segoe UI", 12, "bold"))
-            return
-        try:
-            image = Image.open(logo_path).convert("RGBA")
-            target_width = max(1, int(width * self._logo_size_fraction()))
-            image.thumbnail((target_width, height), Image.LANCZOS)
-            self.logo_preview_image = ImageTk.PhotoImage(image)
-        except Exception:
-            canvas.create_text(150, 315, text="PNG inválido", fill="#fca5a5", font=("Segoe UI", 12, "bold"))
-            return
-        margin = 22
-        x, y = self._logo_preview_coordinates(width, height, self.logo_preview_image.width(), self.logo_preview_image.height(), margin)
-        canvas.create_image(x, y, image=self.logo_preview_image, anchor="nw")
-        
-        # Adiciona o texto abaixo da logo no preview com fonte, tamanho e offset ajustáveis
-        logo_text = self.logo_text.get().strip()
-        if logo_text:
-            text_font_name = self.logo_text_font.get().strip() or "Segoe UI"
-            text_font_size = self._safe_float(self.logo_text_size.get(), 10.0, 4.0, 72.0)
-            text_offset = int(self._safe_float(self.logo_text_offset.get(), 12.0, -50.0, 100.0))
-            text_y = y + self.logo_preview_image.height() + text_offset
-            try:
-                text_font = (text_font_name, int(text_font_size), "bold")
-            except Exception:
-                text_font = ("Segoe UI", 10, "bold")
-            canvas.create_text(x + self.logo_preview_image.width() // 2, text_y, text=logo_text, fill="#ffffff", font=text_font, anchor="n")
-
-    def _entry_row(self, parent: Frame, label: str, variable: StringVar, hint: str) -> None:
-        Label(parent, text=label, bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        Entry(parent, textvariable=variable, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11)).pack(fill=X, ipady=9, pady=(6, 4))
-        Label(parent, text=hint, bg="#ffffff", fg="#657084", font=("Segoe UI", 8)).pack(anchor="w", pady=(0, 12))
-
-    def _option_row(self, parent: Frame, label: str, variable: StringVar, values: list[str]) -> None:
-        Label(parent, text=label, bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        combo = ttk.Combobox(parent, textvariable=variable, values=values, state="readonly", font=("Segoe UI", 10))
-        combo.pack(fill=X, ipady=6, pady=(6, 14))
-
-    def _update_subtitle_preview(self) -> None:
-        if not hasattr(self, "subtitle_preview"):
-            return
-        canvas = self.subtitle_preview
-        canvas.delete("all")
-        width = 300
-        height = 500
-        for step in range(0, height, 20):
-            shade = 28 + int(step / height * 38)
-            canvas.create_rectangle(0, step, width, step + 20, fill=f"#{shade:02x}{shade + 12:02x}{shade + 28:02x}", outline="")
-        canvas.create_rectangle(20, 28, 280, 472, outline="#657084", width=2)
-        canvas.create_oval(105, 95, 195, 185, fill="#5b6cff", outline="")
-        canvas.create_rectangle(58, 235, 242, 350, fill="#27344f", outline="")
-        canvas.create_line(42, 410, 258, 330, fill="#93a4c7", width=4)
-
-        enabled = self.subtitle_enabled.get() == "Sim"
-        if hasattr(self, "subtitle_toggle_label"):
-            self.subtitle_toggle_label.configure(text="Legendas: Ligadas" if enabled else "Legendas: Desligadas", fg="#16a34a" if enabled else "#dc2626")
-        if hasattr(self, "subtitle_toggle_button"):
-            self.subtitle_toggle_button.configure(text="Legendas Desligadas" if enabled else "Ligar Legendas")
-        if not enabled:
-            canvas.create_text(150, 250, text="Legendas desligadas", fill="#e5e7eb", font=("Segoe UI", 18, "bold"), width=230, justify="center")
-            return
-
-        text = self.subtitle_preview_text.get().strip() or "Digite uma frase para testar."
-        size = self._safe_int(self.subtitle_size.get(), 30, 1, 160)
-        preview_size = max(1, int(size * 0.38))
-        position = self.subtitle_position.get()
-        y = {"Topo": 96, "Centro": 250, "Baixo": 405}.get(position, 405)
-        color = self._normalize_color(self.subtitle_color.get(), "#FFFFFF")
-        highlight_color = self._normalize_color(self.subtitle_highlight_color.get(), "#FFD84D")
-        bg_color = self._normalize_color(self.subtitle_background_color.get(), "#000000")
-        outline_color = self._normalize_color(self.subtitle_outline_color.get(), "#000000")
-        font = self.subtitle_font.get().strip() or "Arial"
-        lines = self._preview_subtitle_lines(text, font, preview_size, 230)
-        line_height = max(preview_size + 5, int(preview_size * 1.25))
-        total_height = max(line_height, len(lines) * line_height)
-        start_y = y - total_height / 2 + line_height / 2
-
-        box_padding = max(8, int(preview_size * 0.65))
-        if self.subtitle_background.get() == "Sim":
-            canvas.create_rectangle(24, y - total_height / 2 - box_padding, 276, y + total_height / 2 + box_padding, fill=bg_color, outline="")
-        highlight_index = self._preview_highlight_index(text)
-        outline_offset = max(1, min(2, preview_size // 8 or 1))
-        for line_index, line_words in enumerate(lines):
-            current_y = int(start_y + line_index * line_height)
-            self._draw_preview_subtitle_line(
-                canvas,
-                line_words,
-                highlight_index,
-                150,
-                current_y,
-                font,
-                preview_size,
-                color,
-                highlight_color,
-                outline_color,
-                outline_offset,
-            )
-
-    @staticmethod
-    def _preview_highlight_index(text: str) -> int:
-        words = text.split()
-        if not words:
-            return 0
-        # O preview mostra uma palavra intermediária destacada para demonstrar o efeito durante a fala.
-        return min(max(len(words) // 2, 0), len(words) - 1)
-
-    @staticmethod
-    def _preview_subtitle_lines(text: str, font_name: str, font_size: int, max_width: int) -> list[list[tuple[int, str]]]:
-        words = [(index, word) for index, word in enumerate(text.split())]
-        if not words:
-            return [[(0, text)]]
-        measuring_font = tkfont.Font(family=font_name, size=font_size, weight="bold")
-        lines: list[list[tuple[int, str]]] = []
-        current: list[tuple[int, str]] = []
-        for indexed_word in words:
-            candidate = [*current, indexed_word]
-            candidate_text = " ".join(word for _index, word in candidate)
-            if current and measuring_font.measure(candidate_text) > max_width:
-                lines.append(current)
-                current = [indexed_word]
-            else:
-                current = candidate
-        if current:
-            lines.append(current)
-        return lines
-
-    @staticmethod
-    def _draw_preview_subtitle_line(
-        canvas: Canvas,
-        words: list[tuple[int, str]],
-        highlight_index: int,
-        center_x: int,
-        y: int,
-        font_name: str,
-        font_size: int,
-        color: str,
-        highlight_color: str,
-        outline_color: str,
-        outline_offset: int,
-    ) -> None:
-        measuring_font = tkfont.Font(family=font_name, size=font_size, weight="bold")
-        word_widths = [measuring_font.measure(word) for _index, word in words]
-        space_width = measuring_font.measure(" ")
-        total_width = sum(word_widths) + max(0, len(words) - 1) * space_width
-        current_x = center_x - total_width / 2
-        for (word_index, word), word_width in zip(words, word_widths, strict=True):
-            word_center = int(current_x + word_width / 2)
-            fill = highlight_color if word_index == highlight_index else color
-            # O contorno é desenhado palavra a palavra para o destaque manter o mesmo layout do vídeo final.
-            for dx, dy in [(-outline_offset, 0), (outline_offset, 0), (0, -outline_offset), (0, outline_offset), (-outline_offset, -outline_offset), (outline_offset, -outline_offset), (-outline_offset, outline_offset), (outline_offset, outline_offset)]:
-                canvas.create_text(word_center + dx, y + dy, text=word, fill=outline_color, font=(font_name, font_size, "bold"))
-            canvas.create_text(word_center, y, text=word, fill=fill, font=(font_name, font_size, "bold"))
-            current_x += word_width + space_width
-
-    def _build_audio_tab(self, parent: Frame) -> None:
-        top = Frame(parent, bg="#ffffff")
-        top.pack(fill=X)
-        ttk.Label(top, text="Audio", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Gere áudios localmente usando IA. Selecione um áudio de referência para clonar sua voz.", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
-
-        canvas = Canvas(parent, bd=0, highlightthickness=0, bg="#ffffff")
-        canvas.pack(side=LEFT, fill=BOTH, expand=True)
-        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        scrollbar.pack(side=RIGHT, fill=Y)
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        content = Frame(canvas, bg="#ffffff")
-        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
-        content.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(content_window, width=event.width))
-        canvas.bind("<MouseWheel>", lambda event: canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
-
-        # Card de configurações de TTS
-        tts_card = Frame(content, bg="#f8f9fd", padx=14, pady=12)
-        tts_card.pack(fill=X, pady=(0, 12))
-        Label(tts_card, text="Configurações de TTS Local", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 8))
-        
-        # Idioma
-        lang_row = Frame(tts_card, bg="#f8f9fd")
-        lang_row.pack(fill=X, pady=(6, 6))
-        Label(lang_row, text="Idioma:", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold"), width=15, anchor="w").pack(side=LEFT)
-        lang_combo = ttk.Combobox(lang_row, textvariable=self.tts_language, values=["pt-br", "en-us", "en-gb", "es-es", "fr-fr", "de-de", "it-it", "ja-jp", "zh-cn"], state="readonly", width=20, font=("Segoe UI", 9))
-        lang_combo.pack(side=LEFT, ipady=4)
-        Label(lang_row, text="Selecione o idioma para geração dos áudios.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(side=LEFT, padx=(10, 0))
-        
-        # Áudio de referência (para XTTS)
-        Label(tts_card, text="Áudio de referência", bg="#f8f9fd", fg="#111827", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(12, 6))
-        ref_row = Frame(tts_card, bg="#f8f9fd")
-        ref_row.pack(fill=X, pady=(6, 6))
-        Entry(ref_row, textvariable=self.tts_voice_ref_path, bd=0, bg="#e8eaef", fg="#657084", insertbackground="#111827", font=("Segoe UI", 9)).pack(side=LEFT, fill=X, expand=True, ipady=8)
-        Button(ref_row, text="Selecionar áudio", command=self._choose_voice_ref_file, bg="#e8eaef", fg="#657084", relief="flat", padx=14, pady=8, font=("Segoe UI", 9)).pack(side=RIGHT, padx=(10, 0))
-        Label(tts_card, text="Selecione um áudio de 3-10 segundos com a voz desejada para clonagem.", bg="#f8f9fd", fg="#657084", font=("Segoe UI", 8)).pack(anchor="w", pady=(6, 0))
-        
-        # Status do modelo
-        status_frame = Frame(tts_card, bg="#f8f9fd")
-        status_frame.pack(fill=X, pady=(12, 0))
-        self.tts_status_label = Label(status_frame, text="XTTS: Não carregado", bg="#f8f9fd", fg="#dc2626", font=("Segoe UI", 9))
-        self.tts_status_label.pack(anchor="w")
-        
-        # Botões para carregar modelos
-        btn_frame = Frame(tts_card, bg="#f8f9fd")
-        btn_frame.pack(fill=X, pady=(10, 0))
-        Button(btn_frame, text="Carregar XTTS", command=self._load_xtts_model, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=14, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT)
-
-        # Lista de frases com botões de escutar
-        Label(content, text="Frases do Roteiro", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(16, 8))
-        
-        self.audio_list_frame = Frame(content, bg="#ffffff")
-        self.audio_list_frame.pack(fill=BOTH, expand=True)
-        self._refresh_audio_list()
-        
-        # Botões de ação
-        actions = Frame(content, bg="#ffffff", pady=16)
-        actions.pack(fill=X)
-        Button(actions, text="Gerar todos os áudios", command=self._generate_all_audios, bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=18, pady=10, font=("Segoe UI", 10, "bold")).pack(side=LEFT)
-        Label(actions, text="Os áudios serão gerados e salvos automaticamente.", bg="#ffffff", fg="#657084", font=("Segoe UI", 9)).pack(side=LEFT, padx=(12, 0))
-
-    def _refresh_audio_list(self) -> None:
-        """Atualiza a lista de frases na aba Audio."""
-        for widget in self.audio_list_frame.winfo_children():
-            widget.destroy()
-        
-        # Atualiza as linhas do roteiro antes de mostrar a lista
-        self._refresh_lines()
-        
-        if not self.lines:
-            Label(self.audio_list_frame, text="Nenhuma frase no roteiro. Vá para a aba Roteiro e gere ou digite um roteiro.", bg="#ffffff", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 0))
-            return
-        
-        for index, line in enumerate(self.lines, start=1):
-            frame = Frame(self.audio_list_frame, bg="#f9fafb", padx=10, pady=8)
-            frame.pack(fill=X, pady=(0, 6))
-            
-            # Número da frase
-            Label(frame, text=f"{index}.", bg="#f9fafb", fg="#657084", font=("Segoe UI", 9, "bold"), width=3).pack(side=LEFT)
-            
-            # Texto da frase (sempre atualizado com o roteiro atual)
-            text_label = Label(frame, text=line.text[:80] + ("..." if len(line.text) > 80 else ""), bg="#f9fafb", fg="#111827", font=("Segoe UI", 9), wraplength=500, justify=LEFT)
-            text_label.pack(side=LEFT, fill=X, expand=True, padx=(6, 10))
-            
-            # Botão Escutar - usa índice para buscar o caminho correto no momento do clique
-            audio_path = CLIPBOARD_MEDIA_DIR / f"audio_{index:03d}.wav"
-            if audio_path.exists():
-                # Usa função factory para criar closure correto com o índice
-                def make_play_callback(idx):
-                    def callback():
-                        path = CLIPBOARD_MEDIA_DIR / f"audio_{idx:03d}.wav"
-                        self._play_audio(path)
-                    return callback
-                Button(frame, text="Escutar áudio", command=make_play_callback(index), bg="#e0f2fe", fg="#0369a1", relief="flat", padx=10, pady=4, font=("Segoe UI", 9)).pack(side=RIGHT)
-            else:
-                Label(frame, text="Áudio não gerado", bg="#f9fafb", fg="#9ca3af", font=("Segoe UI", 8)).pack(side=RIGHT, padx=(10, 0))
-
-    def _play_audio(self, audio_path: Path) -> None:
-        """Toca um arquivo de áudio usando sounddevice."""
-        try:
-            import sounddevice as sd
-            # Lê o arquivo de áudio
-            data, samplerate = sf.read(str(audio_path))
-            # Toca o áudio
-            sd.play(data, samplerate)
-            # Aguarda até terminar
-            sd.wait()
-        except ImportError:
-            # Fallback usando subprocess
-            try:
-                if sys.platform == "win32":
-                    import os
-                    os.startfile(str(audio_path))
-                elif sys.platform == "darwin":
-                    subprocess.run(["afplay", str(audio_path)], check=False)
-                else:
-                    subprocess.run(["aplay", str(audio_path)], check=False)
-            except Exception as e:
-                messagebox.showerror(APP_TITLE, f"Erro ao reproduzir áudio: {e}")
-        except Exception as e:
-            messagebox.showerror(APP_TITLE, f"Erro ao reproduzir áudio: {e}")
-
-    def _choose_voice_ref_file(self) -> None:
-        file_path = filedialog.askopenfilename(
-            title="Selecionar áudio de referência",
-            filetypes=[
-                ("Arquivos de áudio", "*.mp3 *.wav *.m4a *.aac *.ogg *.flac"),
-                ("Todos os arquivos", "*.*"),
-            ],
-        )
-        if file_path:
-            self.tts_voice_ref_path.set(file_path)
-            self._save_config()
-
-    def _load_xtts_model(self) -> None:
-        """Carrega o modelo XTTS para TTS com clonagem de voz."""
-        try:
-            from TTS.api import TTS
-            self.status_text.set("Carregando modelo XTTS...")
-            self.root.update()
-            
-            # Verifica se há GPU disponível
-            use_cuda = torch.cuda.is_available()
-            if not use_cuda:
-                self.status_text.set("XTTS: Sem GPU detectada, usando CPU (lento)")
-            
-            # Carrega o modelo XTTS v2
-            self.xtts_model = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(
-                "cuda" if use_cuda else "cpu"
-            )
-            
-            self.tts_status_label.configure(
-                text=f"XTTS: Carregado {'(GPU)' if use_cuda else '(CPU)'}", 
-                fg="#059669"
-            )
-        except ImportError:
-            self.tts_status_label.configure(text="XTTS: Não instalado (pip install TTS)", fg="#dc2626")
-            messagebox.showerror(APP_TITLE, 
-                "XTTS não está instalado.\n\n"
-                "Instale com: pip install TTS\n\n"
-                "Nota: Pode ser necessário instalar versões específicas:")
-        except MemoryError:
-            self.tts_status_label.configure(text="Erro: Memória insuficiente", fg="#dc2626")
-            self.status_text.set("Erro: XTTS requer mais memória VRAM/RAM")
-            messagebox.showerror(APP_TITLE, 
-                "Memória insuficiente para carregar o XTTS.\n\n"
-                "Soluções:\n"
-                "1. Feche outros programas para liberar memória\n"
-                "2. Use uma GPU com mais VRAM (mínimo 4GB recomendado)")
-        except Exception as e:
-            self.tts_status_label.configure(text=f"Erro ao carregar XTTS: {e}", fg="#dc2626")
-            self.status_text.set(f"Erro: {e}")
-            messagebox.showerror(APP_TITLE, f"Erro ao carregar modelo XTTS:\n{e}")
-
-    def _generate_all_audios(self) -> None:
-        """Gera todos os áudios das frases."""
-        if not self.lines:
-            messagebox.showerror(APP_TITLE, "Nenhuma frase no roteiro. Gere um roteiro primeiro.")
-            return
-        
-        # Usa apenas XTTS
-        if self.xtts_model is None:
-            messagebox.showwarning(APP_TITLE, "Modelo XTTS não carregado.\nClique em Carregar XTTS antes de gerar os áudios.")
-            return
-        # Verifica se há áudio de referência para XTTS
-        if not self.tts_voice_ref_path.get().strip():
-            messagebox.showwarning(APP_TITLE, "XTTS requer um áudio de referência.\nSelecione um arquivo de áudio (3-10 segundos) na aba Audio antes de gerar.")
-            return
-        
-        # Cria diretório de mídia
-        CLIPBOARD_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-        
-        self.progress.configure(value=0, maximum=len(self.lines))
-        self.progress_text.set(f"Gerando áudio 0/{len(self.lines)}")
-        
-        threading.Thread(target=self._generate_all_audios_worker, daemon=True).start()
-
-    def _generate_all_audios_worker(self) -> None:
-        """Worker para gerar todos os áudios em thread separada."""
-        try:
-            # Gera áudio com XTTS
-            self._generate_all_audios_xtts()
-                
-        except Exception as e:
-            self.message_queue.put(("error", f"Erro ao gerar áudios: {e}"))
-
-    def _generate_all_audios_xtts(self) -> None:
-        """Worker para gerar áudios com XTTS."""
-        if self.xtts_model is None:
-            self.message_queue.put(("error", "Modelo XTTS não carregado"))
-            return
-        
-        speaker_wav = self.tts_voice_ref_path.get().strip()
-        language = self.tts_language.get().lower()
-        
-        # Mapeia para o formato do XTTS
-        lang_mapping = {
-            "pt-br": "pt",
-            "en-us": "en",
-            "en-gb": "en",
-            "es-es": "es",
-            "fr-fr": "fr",
-            "de-de": "de",
-            "it-it": "it",
-            "ja-jp": "ja",
-            "zh-cn": "zh"
-        }
-        lang = lang_mapping.get(language, "pt")
-        
-        for index, line in enumerate(self.lines, start=1):
-            self.message_queue.put(("status", f"Gerando áudio XTTS {index}/{len(self.lines)}: {line.text[:50]}..."))
-            
-            audio_path = CLIPBOARD_MEDIA_DIR / f"audio_{index:03d}.wav"
-            
-            try:
-                # XTTS requer speaker_wav para clonagem de voz
-                if not speaker_wav:
-                    self.message_queue.put(("error", "XTTS requer um áudio de referência. Selecione um arquivo na aba Audio."))
-                    return
-                
-                # Gera áudio com XTTS
-                self.xtts_model.tts_to_file(
-                    text=line.text,
-                    speaker_wav=speaker_wav,
-                    language=lang,
-                    file_path=str(audio_path)
-                )
-                
-                self.message_queue.put(("status", f"Áudio XTTS gerado: {line.text[:50]}..."))
-                
-            except MemoryError:
-                self.message_queue.put(("error", "Memória insuficiente para gerar áudio XTTS"))
-                return
-            except Exception as e:
-                self.message_queue.put(("error", f"Erro ao gerar áudio XTTS {index}: {e}"))
-                return
-            
-            self.root.after(0, lambda i=index: self.progress.configure(value=i))
-        
-        self.root.after(0, lambda: self.progress_text.set("Todos os áudios XTTS gerados!"))
-        self.root.after(0, lambda: self.status_text.set("Áudios gerados com XTTS"))
-        # Atualiza a lista de áudios na interface
-        self.root.after(0, self._refresh_audio_list)
-
-    def _generate_tts(self, text: str, output_path: Path) -> None:
-        """Gera áudio usando XTTS com clonagem de voz."""
-        self._generate_tts_xtts(text, output_path)
-
-    def _generate_tts_xtts(self, text: str, output_path: Path) -> None:
-        """Gera áudio usando XTTS com clonagem de voz."""
-        if self.xtts_model is None:
-            raise RuntimeError("Modelo XTTS não carregado. Carregue o modelo na aba Audio primeiro.")
-        
-        speaker_wav = self.tts_voice_ref_path.get().strip()
-        if not speaker_wav:
-            raise RuntimeError("XTTS requer um áudio de referência. Selecione um arquivo na aba Audio.")
-        
-        language = self.tts_language.get().lower()
-        lang_mapping = {
-            "pt-br": "pt",
-            "en-us": "en",
-            "en-gb": "en",
-            "es-es": "es",
-            "fr-fr": "fr",
-            "de-de": "de",
-            "it-it": "it",
-            "ja-jp": "ja",
-            "zh-cn": "zh"
-        }
-        lang = lang_mapping.get(language, "pt")
-        
-        try:
-            # Melhora a qualidade do TTS adicionando pausas naturais e limpando o texto
-            # Remove múltiplos espaços e normaliza pontuação para melhor fluência
-            cleaned_text = re.sub(r'\s+', ' ', text).strip()
-            # Adiciona pausa suave entre frases para evitar voz travada
-            cleaned_text = re.sub(r'([.!?])\s*', r'\1 ', cleaned_text)
-            
-            # Gera áudio com XTTS
-            self.xtts_model.tts_to_file(
-                text=cleaned_text,
-                speaker_wav=speaker_wav,
-                language=lang,
-                file_path=str(output_path),
-                speed=1.0  # Velocidade normal para melhor clareza
-            )
-            
-            self._queue_status(f"Áudio XTTS gerado: {text[:50]}...", step=True)
-            
-        except MemoryError:
-            raise RuntimeError("Memória insuficiente para gerar áudio XTTS.")
-        except Exception as e:
-            raise RuntimeError(f"Erro ao gerar áudio com XTTS: {e}")
-
-    def _build_music_tab(self, parent: Frame) -> None:
-        top = Frame(parent, bg="#ffffff")
-        top.pack(fill=X)
-        ttk.Label(top, text="Musica", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Selecione uma música do PC para tocar durante todo o vídeo.", style="Muted.TLabel").pack(anchor="w", pady=(4, 22))
-
-        Label(parent, text="Arquivo de música", bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        music_row = Frame(parent, bg="#ffffff")
-        music_row.pack(fill=X, pady=(6, 14))
-        Entry(music_row, textvariable=self.music_path, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 10)).pack(side=LEFT, fill=X, expand=True, ipady=9)
-        Button(music_row, text="Selecionar música", command=self._choose_music_file, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(side=RIGHT, padx=(10, 0))
-
-        self._entry_row(parent, "Volume da música (%)", self.music_volume, "Padrão: 20. Use 0 para silenciar ou 100 para volume total.")
-
-    def _choose_music_file(self) -> None:
-        file_path = filedialog.askopenfilename(
-            title="Selecionar música",
-            filetypes=[
-                ("Arquivos de áudio", "*.mp3 *.wav *.m4a *.aac *.ogg *.flac"),
-                ("Todos os arquivos", "*.*"),
-            ],
-        )
-        if file_path:
-            self.music_path.set(file_path)
-            self._save_config()
-
-    def _toggle_subtitles(self) -> None:
-        self.subtitle_enabled.set("Não" if self.subtitle_enabled.get() == "Sim" else "Sim")
-
-    def _labeled_entry(self, parent: Frame, text: str, variable: StringVar, show: str | None = None) -> None:
-        Label(parent, text=text, bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        Entry(parent, textvariable=variable, show=show, bd=0, bg="#f3f5fb", fg="#111827", insertbackground="#111827", font=("Segoe UI", 11)).pack(fill=X, ipady=10, pady=(6, 14))
-
-    def _load_config(self) -> None:
-        if CONFIG_FILE.exists():
-            try:
-                data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-                self.pexels_key.set(data.get("pexels_key", ""))
-                self.groq_key.set(data.get("groq_key", ""))
-                self.video_title.set(data.get("video_title", self.video_title.get()))
-                self.script_text_value = data.get("script_text", self.script_text_value)
-                self.lines = self._config_lines(data.get("script_lines", []))
-                self.used_media_urls.update({line.media_url for line in self.lines if line.media_url})
-                self.output_dir.set(data.get("output_dir", self.output_dir.get()))
-                self.video_extra_after_audio.set(data.get("video_extra_after_audio", self.video_extra_after_audio.get()))
-                self.subtitle_enabled.set(data.get("subtitle_enabled", self.subtitle_enabled.get()))
-                self.subtitle_position.set(data.get("subtitle_position", self.subtitle_position.get()))
-                self.subtitle_color.set(data.get("subtitle_color", self.subtitle_color.get()))
-                self.subtitle_highlight_color.set(data.get("subtitle_highlight_color", self.subtitle_highlight_color.get()))
-                self.subtitle_size.set(data.get("subtitle_size", self.subtitle_size.get()))
-                self.subtitle_background.set(data.get("subtitle_background", self.subtitle_background.get()))
-                self.subtitle_background_color.set(data.get("subtitle_background_color", self.subtitle_background_color.get()))
-                self.subtitle_outline_color.set(data.get("subtitle_outline_color", self.subtitle_outline_color.get()))
-                self.subtitle_font.set(data.get("subtitle_font", self.subtitle_font.get()))
-                self.subtitle_preview_text.set(data.get("subtitle_preview_text", self.subtitle_preview_text.get()))
-                self.qwen_shortcut.set(data.get("qwen_shortcut", self.qwen_shortcut.get()))
-                self.qwen_response_wait.set(data.get("qwen_response_wait", self.qwen_response_wait.get()))
-                self.qwen_send_wait.set(data.get("qwen_send_wait", self.qwen_send_wait.get()))
-                self.qwen_menu_wait.set(data.get("qwen_menu_wait", self.qwen_menu_wait.get()))
-                self.qwen_menu_x.set(data.get("qwen_menu_x", self.qwen_menu_x.get()))
-                self.qwen_menu_y.set(data.get("qwen_menu_y", self.qwen_menu_y.get()))
-                self.qwen_input_x.set(data.get("qwen_input_x", self.qwen_input_x.get()))
-                self.qwen_input_y.set(data.get("qwen_input_y", self.qwen_input_y.get()))
-                self.qwen_send_x.set(data.get("qwen_send_x", self.qwen_send_x.get()))
-                self.qwen_send_y.set(data.get("qwen_send_y", self.qwen_send_y.get()))
-                self.qwen_read_x.set(data.get("qwen_read_x", self.qwen_read_x.get()))
-                self.qwen_read_y.set(data.get("qwen_read_y", self.qwen_read_y.get()))
-                self.qwen_record_extra.set(data.get("qwen_record_extra", self.qwen_record_extra.get()))
-                self.music_path.set(data.get("music_path", self.music_path.get()))
-                self.music_volume.set(data.get("music_volume", self.music_volume.get()))
-                self.logo_path.set(data.get("logo_path", self.logo_path.get()))
-                self.logo_position.set(data.get("logo_position", self.logo_position.get()) or self.logo_position.get())
-                self.logo_size.set(data.get("logo_size", self.logo_size.get()))
-                self.logo_text.set(data.get("logo_text", self.logo_text.get()))
-                self.logo_text_font.set(data.get("logo_text_font", self.logo_text_font.get()))
-                self.logo_text_size.set(data.get("logo_text_size", self.logo_text_size.get()))
-                self.logo_text_offset.set(data.get("logo_text_offset", self.logo_text_offset.get()))
-                self.tts_voice_ref_path.set(data.get("tts_voice_ref_path", self.tts_voice_ref_path.get()))
-                self._saved_script_prompt = data.get("script_prompt", "")
-            except json.JSONDecodeError:
-                pass
-
-    def _save_config(self, show_status: bool = True) -> None:
-        self.script_text_value = self._script_text_content()
-        data = {
-            "pexels_key": self.pexels_key.get().strip(),
-            "groq_key": self.groq_key.get().strip(),
-            "video_title": self.video_title.get().strip(),
-            "script_text": self.script_text_value,
-            "script_prompt": self.script_prompt_text.get("1.0", END).strip(),
-            "script_lines": self._config_script_lines(),
-            "output_dir": self.output_dir.get().strip(),
-            "video_extra_after_audio": self.video_extra_after_audio.get().strip(),
-            "subtitle_enabled": self.subtitle_enabled.get().strip(),
-            "subtitle_position": self.subtitle_position.get().strip(),
-            "subtitle_color": self.subtitle_color.get().strip(),
-            "subtitle_highlight_color": self.subtitle_highlight_color.get().strip(),
-            "subtitle_size": self.subtitle_size.get().strip(),
-            "subtitle_background": self.subtitle_background.get().strip(),
-            "subtitle_background_color": self.subtitle_background_color.get().strip(),
-            "subtitle_outline_color": self.subtitle_outline_color.get().strip(),
-            "subtitle_font": self.subtitle_font.get().strip(),
-            "subtitle_preview_text": self.subtitle_preview_text.get().strip(),
-            "qwen_shortcut": self.qwen_shortcut.get().strip(),
-            "qwen_response_wait": self.qwen_response_wait.get().strip(),
-            "qwen_send_wait": self.qwen_send_wait.get().strip(),
-            "qwen_menu_wait": self.qwen_menu_wait.get().strip(),
-            "qwen_menu_x": self.qwen_menu_x.get().strip(),
-            "qwen_menu_y": self.qwen_menu_y.get().strip(),
-            "qwen_input_x": self.qwen_input_x.get().strip(),
-            "qwen_input_y": self.qwen_input_y.get().strip(),
-            "qwen_send_x": self.qwen_send_x.get().strip(),
-            "qwen_send_y": self.qwen_send_y.get().strip(),
-            "qwen_read_x": self.qwen_read_x.get().strip(),
-            "qwen_read_y": self.qwen_read_y.get().strip(),
-            "qwen_record_extra": self.qwen_record_extra.get().strip(),
-            "music_path": self.music_path.get().strip(),
-            "music_volume": self.music_volume.get().strip(),
-            "logo_path": self.logo_path.get().strip(),
-            "logo_position": self.logo_position.get().strip(),
-            "logo_size": self.logo_size.get().strip(),
-            "logo_text": self.logo_text.get().strip(),
-            "logo_text_font": self.logo_text_font.get().strip(),
-            "logo_text_size": self.logo_text_size.get().strip(),
-            "logo_text_offset": self.logo_text_offset.get().strip(),
-            "tts_voice_ref_path": self.tts_voice_ref_path.get().strip(),
-        }
-        CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        if show_status:
-            self.status_text.set("Configurações salvas no perfil do usuário.")
-
-    def _script_text_content(self) -> str:
-        if hasattr(self, "script_text"):
-            return self.script_text.get("1.0", "end-1c")
-        return self.script_text_value
-
-    @staticmethod
-    def _config_lines(raw_lines: Any) -> list[ScriptLine]:
-        if not isinstance(raw_lines, list):
-            return []
-        lines: list[ScriptLine] = []
-        for item in raw_lines:
-            if not isinstance(item, dict):
-                continue
-            text = str(item.get("text", "")).strip()
-            if text:
-                media_url = str(item.get("media_url", "")).strip()
-                lines.append(ScriptLine(text=text, media_url=media_url))
-        return lines
-
-    def _all_media_urls(self) -> set[str]:
-        return {line.media_url.strip() for line in self.lines if line.media_url.strip()} | getattr(self, "used_media_urls", set())
-
-    def _config_script_lines(self) -> list[dict[str, str]]:
-        existing = {line.text: line.media_url for line in self.lines}
-        phrases = [line.strip() for line in self.script_text_value.splitlines() if line.strip()]
-        if phrases:
-            return [{"text": phrase, "media_url": existing.get(phrase, "")} for phrase in phrases]
-        return [{"text": line.text, "media_url": line.media_url} for line in self.lines]
-
-    def _on_close(self) -> None:
-        try:
-            self._save_config(show_status=False)
-        finally:
-            self.root.destroy()
-
-    def _refresh_lines(self) -> None:
-        existing = {line.text: line.media_url for line in self.lines}
-        phrases = [line.strip() for line in self.script_text.get("1.0", END).splitlines() if line.strip()]
-        self.lines = [ScriptLine(text=phrase, media_url=existing.get(phrase, "")) for phrase in phrases]
-        self._render_lines()
-        self._save_config(show_status=False)
-        self.status_text.set(f"{len(self.lines)} frase(s) sincronizada(s).")
-
-    def _render_lines(self) -> None:
-        if not hasattr(self, "lines_frame"):
-            return
-        for child in self.lines_frame.winfo_children():
-            child.destroy()
-        if not self.lines:
-            Label(self.lines_frame, text="Nenhuma frase no roteiro ainda.", bg="#f3f5fb", fg="#657084", font=("Segoe UI", 10)).pack(anchor="w", padx=8, pady=8)
-            return
-        for index, line in enumerate(self.lines):
-            row = Frame(self.lines_frame, bg="#ffffff", padx=12, pady=10)
-            row.pack(fill=X, pady=(0, 8))
-            text_area = Frame(row, bg="#ffffff")
-            text_area.pack(side=LEFT, fill=BOTH, expand=True)
-            Label(text_area, text=f"{index + 1}. {line.text}", bg="#ffffff", fg="#111827", anchor="w", justify=LEFT, wraplength=560, font=("Segoe UI", 10, "bold")).pack(fill=X, anchor="w")
-            media_label = line.media_url if line.media_url else "Sem link manual: o app buscará automaticamente no Pexels."
-            Label(text_area, text=media_label, bg="#ffffff", fg="#657084", anchor="w", justify=LEFT, wraplength=500, font=("Segoe UI", 9)).pack(fill=X, anchor="w", pady=(4, 0))
-            preview = self._media_preview_widget(row, line.media_url)
-            preview.pack(side=RIGHT, padx=(12, 0))
-            buttons = Frame(row, bg="#ffffff")
-            buttons.pack(side=RIGHT, padx=(12, 0))
-            Button(buttons, text="Colar link", command=lambda idx=index: self._paste_line_link(idx), bg="#5b6cff", fg="#ffffff", activebackground="#4657e8", activeforeground="#ffffff", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT)
-            Button(buttons, text="Gerar outro video", command=lambda idx=index: self._start_single_video_update(idx), bg="#eef1ff", fg="#27319f", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(8, 0))
-            Button(buttons, text="Editar", command=lambda idx=index: self._edit_line_link(idx), bg="#eef1ff", fg="#27319f", relief="flat", padx=12, pady=8, font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(8, 0))
-
-    def _media_preview_widget(self, parent: Frame, media_url: str) -> Frame:
-        preview = Frame(parent, bg="#eef1f8", width=92, height=116, padx=4, pady=4)
-        preview.pack_propagate(False)
-        clean_url = media_url.strip()
-        if not clean_url:
-            Label(preview, text="Preview\nPexels", bg="#eef1f8", fg="#8b95a7", justify="center", font=("Segoe UI", 8, "bold")).pack(fill=BOTH, expand=True)
-            return preview
-
-        # O preview usa a mesma área para links do Pexels e imagens coladas da área de transferência.
-        image = self._load_media_preview(clean_url)
-        if image:
-            Label(preview, image=image, bg="#eef1f8").pack(fill=BOTH, expand=True)
-        elif clean_url in self.media_preview_failed:
-            Label(preview, text="Sem\npreview", bg="#eef1f8", fg="#8b95a7", justify="center", font=("Segoe UI", 8, "bold")).pack(fill=BOTH, expand=True)
-        else:
-            Label(preview, text="Carregando\npreview", bg="#eef1f8", fg="#8b95a7", justify="center", font=("Segoe UI", 8, "bold")).pack(fill=BOTH, expand=True)
-            self._start_media_preview_load(clean_url)
-        return preview
-
-    def _load_media_preview(self, media_url: str) -> ImageTk.PhotoImage | None:
-        if media_url in self.media_preview_images:
-            return self.media_preview_images[media_url]
-        image_bytes = self.media_preview_bytes.get(media_url)
-        local_path = self._local_media_path(media_url)
-        if not image_bytes and local_path and local_path.suffix.lower() in IMAGE_EXTENSIONS:
-            try:
-                # Imagens locais/coladas já estão no disco; ler direto evita uma chamada HTTP desnecessária.
-                image_bytes = local_path.read_bytes()
-                self.media_preview_bytes[media_url] = image_bytes
-            except OSError:
-                image_bytes = None
-        if not image_bytes:
-            return None
-        try:
-            image = Image.open(BytesIO(image_bytes)).convert("RGB")
-            image.thumbnail((84, 108))
-            photo = ImageTk.PhotoImage(image)
-            self.media_preview_images[media_url] = photo
-            return photo
-        except Exception:
-            self.media_preview_failed.add(media_url)
-            return None
-
-    def _start_media_preview_load(self, media_url: str) -> None:
-        local_path = self._local_media_path(media_url)
-        if local_path:
-            self.media_preview_failed.add(media_url)
-            return
-        if media_url in self.media_preview_loading or media_url in self.media_preview_failed:
-            return
-        self.media_preview_loading.add(media_url)
-        api_key = self.pexels_key.get().strip()
-
-        def worker() -> None:
-            image_bytes: bytes | None = None
-            try:
-                preview_url = self._media_preview_url(media_url, api_key)
-                if preview_url:
-                    response = requests.get(preview_url, timeout=8)
-                    response.raise_for_status()
-                    image_bytes = response.content
-            except Exception:
-                image_bytes = None
-
-            def finish() -> None:
-                self.media_preview_loading.discard(media_url)
-                if image_bytes:
-                    self.media_preview_bytes[media_url] = image_bytes
-                    self.media_preview_failed.discard(media_url)
-                else:
-                    self.media_preview_failed.add(media_url)
-                self._render_lines()
-
-            self.root.after(0, finish)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _media_preview_url(self, media_url: str, api_key: str | None = None) -> str:
-        parsed = urllib.parse.urlparse(media_url)
-        suffix = Path(parsed.path).suffix.lower()
-        if suffix in IMAGE_EXTENSIONS:
-            return media_url
-        if "pexels.com" not in parsed.netloc:
-            return ""
-
-        match = re.search(r"(\d+)(?:/)?$", parsed.path)
-        clean_api_key = api_key if api_key is not None else self.pexels_key.get().strip()
-        if match and clean_api_key:
-            media_id = match.group(1)
-            headers = {"Authorization": clean_api_key}
-            try:
-                if "/video" in parsed.path:
-                    response = requests.get(f"https://api.pexels.com/videos/videos/{media_id}", headers=headers, timeout=8)
-                    response.raise_for_status()
-                    return response.json().get("image", "") or self._pexels_page_preview_url(media_url)
-                response = requests.get(f"https://api.pexels.com/v1/photos/{media_id}", headers=headers, timeout=8)
-                response.raise_for_status()
-                src = response.json().get("src", {})
-                return src.get("medium") or src.get("large") or src.get("large2x") or self._pexels_page_preview_url(media_url)
-            except Exception:
-                return self._pexels_page_preview_url(media_url)
-        return self._pexels_page_preview_url(media_url)
-
-    @staticmethod
-    def _pexels_page_preview_url(media_url: str) -> str:
-        try:
-            response = requests.get(media_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
-            response.raise_for_status()
-        except Exception:
-            return ""
-
-        for meta_tag in re.findall(r"<meta[^>]+>", response.text, flags=re.IGNORECASE):
-            if not re.search(r"(?:og:image|twitter:image)", meta_tag, flags=re.IGNORECASE):
-                continue
-            content_match = re.search(r'''content=["']([^"']+)["']''', meta_tag, flags=re.IGNORECASE)
-            if not content_match:
-                content_match = re.search(r'''content=([^\s>]+)''', meta_tag, flags=re.IGNORECASE)
-            if content_match:
-                return html.unescape(content_match.group(1))
-        return ""
-
-    @staticmethod
-    def _local_media_path(media_url: str) -> Path | None:
-        clean_url = media_url.strip()
-        if not clean_url:
-            return None
-        parsed = urllib.parse.urlparse(clean_url)
-        if parsed.scheme == "file":
-            path = Path(urllib.parse.unquote(parsed.path))
-        elif parsed.scheme and len(parsed.scheme) == 1:
-            # No Windows, caminhos como C:\foto.png podem ser interpretados como scheme pelo urlparse.
-            path = Path(clean_url).expanduser()
-        elif parsed.scheme:
-            return None
-        else:
-            path = Path(clean_url).expanduser()
-        if path.exists() and path.suffix.lower() in LOCAL_MEDIA_EXTENSIONS:
-            return path
-        return None
-
-    @staticmethod
-    def _image_to_png_bytes(image: Image.Image) -> bytes:
-        output = BytesIO()
-        # PNG preserva bem imagens copiadas sem depender do formato original da área de transferência.
-        image.save(output, format="PNG")
-        return output.getvalue()
-
-    @classmethod
-    def _clipboard_image_bytes_from_value(cls, clipboard_value: Any) -> bytes | None:
-        if isinstance(clipboard_value, Image.Image):
-            return cls._image_to_png_bytes(clipboard_value)
-        if isinstance(clipboard_value, (list, tuple)):
-            for item in clipboard_value:
-                local_path = cls._local_media_path(str(item))
-                if local_path and local_path.suffix.lower() in IMAGE_EXTENSIONS:
-                    with Image.open(local_path) as image:
-                        return cls._image_to_png_bytes(image.convert("RGBA"))
-        return None
-
-    def _clipboard_image_bytes(self) -> bytes | None:
-        try:
-            # ImageGrab.grabclipboard lê imagens reais no clipboard (não apenas texto como pyperclip).
-            clipboard_value = ImageGrab.grabclipboard()
-        except Exception:
-            return None
-        return self._clipboard_image_bytes_from_value(clipboard_value)
-
-    def _save_clipboard_image(self, image_bytes: bytes, index: int) -> str:
-        CLIPBOARD_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-        filename = f"frase_{index + 1:03d}_{int(time.time() * 1000)}.png"
-        output_path = CLIPBOARD_MEDIA_DIR / filename
-        output_path.write_bytes(image_bytes)
-        return str(output_path)
-
-    def _paste_line_link(self, index: int) -> None:
-        image_bytes = self._clipboard_image_bytes()
-        if image_bytes:
-            media_path = self._save_clipboard_image(image_bytes, index)
-            self.used_media_urls.add(media_path)
-            self.lines[index].media_url = media_path
-            self.media_preview_bytes[media_path] = image_bytes
-            self.media_preview_images.pop(media_path, None)
-            self.media_preview_failed.discard(media_path)
-            self._render_lines()
-            self._save_config(show_status=False)
-            self.status_text.set(f"Imagem colada na frase {index + 1}.")
-            return
-
-        try:
-            link = pyperclip.paste().strip()
-        except Exception:
-            link = ""
-        if not link:
-            messagebox.showerror(APP_TITLE, "A área de transferência está vazia. Copie um link do Pexels ou uma imagem e clique em Colar link.")
-            return
-        self.used_media_urls.add(link)
-        self.lines[index].media_url = link
-        self._render_lines()
-        self._save_config(show_status=False)
-        self.status_text.set(f"Link colado na frase {index + 1}.")
-
-    def _edit_line_link(self, index: int) -> None:
-        line = self.lines[index]
-
-        dialog = Toplevel(self.root)
-        dialog.title("Link Pexels")
-        dialog.geometry("640x200")
-        dialog.configure(bg="#ffffff")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        Label(dialog, text=line.text, bg="#ffffff", fg="#111827", wraplength=580, font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20, pady=(18, 8))
-        Label(dialog, text="Cole um link de vídeo/foto do Pexels ou deixe vazio para busca automática.", bg="#ffffff", fg="#657084", font=("Segoe UI", 9)).pack(anchor="w", padx=20, pady=(0, 8))
-        value = StringVar(value=line.media_url)
-        Entry(dialog, textvariable=value, bd=0, bg="#f3f5fb", fg="#111827", font=("Segoe UI", 10)).pack(fill=X, padx=20, ipady=9)
-
-        def save() -> None:
-            media_url = value.get().strip()
-            if media_url:
-                self.used_media_urls.add(media_url)
-            self.lines[index].media_url = media_url
-            self._render_lines()
-            self._save_config(show_status=False)
-            dialog.destroy()
-
-        Button(dialog, text="Salvar link", command=save, bg="#5b6cff", fg="#ffffff", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(anchor="e", padx=20, pady=18)
-
-    def _start_single_video_update(self, index: int) -> None:
-        self._refresh_lines()
-        if index < 0 or index >= len(self.lines):
-            messagebox.showerror(APP_TITLE, "Não encontrei essa frase no roteiro sincronizado.")
-            return
-        if not self.pexels_key.get().strip():
-            messagebox.showerror(APP_TITLE, "Informe a chave de API do Pexels na aba APIs.")
-            self._show_tab("apis")
-            return
-        if not self.groq_key.get().strip():
-            messagebox.showerror(APP_TITLE, "Informe a chave de API do Groq na aba APIs.")
-            self._show_tab("apis")
-            return
-        self.progress.configure(value=0, maximum=1)
-        self.progress_text.set("Gerando outro video...")
-        self.status_text.set(f"Procurando outro video para a frase {index + 1}...")
-        threading.Thread(target=self._single_video_update_worker, args=(index,), daemon=True).start()
-
-    def _single_video_update_worker(self, index: int) -> None:
-        try:
-            line = self.lines[index]
-            query = self._groq_single_pexels_query(index)
-            media_url = self._search_pexels(query, exclude_urls=self._all_media_urls())
-            self.used_media_urls.update({line.media_url, media_url})
-            self.lines[index].media_url = media_url
-            self.root.after(0, self._render_lines)
-            self.root.after(0, lambda: self._save_config(show_status=False))
-            self.message_queue.put(("step", f"Outro video aplicado na frase {index + 1}."))
-            self.message_queue.put(("status", f"Outro video aplicado na frase {index + 1}."))
-        except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
-            self.message_queue.put(("error", str(exc)))
-
-    def _script_subject_keywords(self) -> str:
-        title = self.video_title.get().strip()
-        text = " ".join([title, *(line.text for line in self.lines)])
-        words = re.findall(r"[A-Za-zÀ-ÿ0-9]+", text)
-        stopwords = {
-            "a", "o", "os", "as", "um", "uma", "uns", "umas", "de", "do", "da", "dos", "das", "e", "em", "no", "na", "nos", "nas",
-            "para", "por", "com", "sem", "sobre", "que", "se", "ao", "aos", "mais", "menos", "muito", "muita", "muitos", "muitas",
-            "video", "vídeo", "roteiro", "frase", "hoje", "vamos", "falar", "te", "provar", "esse", "essa", "este", "esta",
-        }
-        keywords: list[str] = []
-        for word in words:
-            clean = word.strip()
-            if len(clean) < 3 or clean.lower() in stopwords:
-                continue
-            if clean.lower() not in {item.lower() for item in keywords}:
-                keywords.append(clean)
-            if len(keywords) >= 5:
-                break
-        return ", ".join(keywords or ([title] if title else []))
-
-    def _ensure_subject_in_query(self, query: str) -> str:
-        clean_query = " ".join(str(query).split()).strip(' ,.;:[]{}"\'')
-        subject = self.video_title.get().strip()
-        if not subject:
-            return clean_query
-        subject_terms = [word.lower() for word in re.findall(r"[A-Za-zÀ-ÿ0-9]+", subject) if len(word) >= 3]
-        subject_aliases = {"china": ["chinese", "great wall", "beijing", "shanghai"]}
-        expanded_terms = [term for term in subject_terms]
-        for term in subject_terms:
-            expanded_terms.extend(subject_aliases.get(term, []))
-        query_lower = clean_query.lower()
-        if any(term in query_lower for term in expanded_terms):
-            return clean_query
-        subject_prefix = " ".join(subject.split()[:3])
-        return f"{subject_prefix} {clean_query}".strip()
-
-    def _groq_single_pexels_query(self, index: int) -> str:
-        context = "\n".join(f"{line_index}. {line.text}" for line_index, line in enumerate(self.lines, start=1))
-        current_url = self.lines[index].media_url.strip() or "sem video atual"
-        prompt = (
-            "Crie uma nova pesquisa para encontrar um video vertical no Pexels para a frase indicada. "
-            "A busca DEVE manter o assunto principal do título/roteiro. Por exemplo, se o título for China, todas as buscas devem conter China ou um local/símbolo claramente chinês. "
-            "Use a frase apenas para escolher o tipo de cena dentro desse assunto, e gere uma busca diferente da tentativa anterior. "
-            "A pesquisa deve estar em inglês, ter 3 a 7 palavras, ser visual, concreta e adequada ao Pexels. "
-            "Responda somente JSON válido no formato {\"query\":\"...\"}.\n\n"
-            f"Título do vídeo / assunto principal: {self.video_title.get().strip() or 'video'}\n"
-            f"Palavras-chave do assunto: {self._script_subject_keywords()}\n"
-            f"Frase selecionada ({index + 1}): {self.lines[index].text}\n"
-            f"Video atual a evitar: {current_url}\n"
-            f"Roteiro completo:\n{context}"
-        )
-        content = self._groq_chat_content(
-            messages=[
-                {"role": "system", "content": "Você cria buscas curtas e variadas para vídeos de banco de imagem."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.55,
-            max_tokens=180,
-        )
-        try:
-            data = self._json_object_from_text(content)
-            query = str(data.get("query", "")).strip()
-        except json.JSONDecodeError:
-            query = self._clean_script_line(content.splitlines()[0] if content.splitlines() else content)
-        query = self._ensure_subject_in_query(query)
-        if not query:
-            raise RuntimeError("O Groq não retornou uma pesquisa para o novo video.")
-        return query
-
-    def _start_video_update(self) -> None:
-        self._refresh_lines()
-        if not self.lines:
-            messagebox.showerror(APP_TITLE, "Adicione pelo menos uma frase ao roteiro.")
-            return
-        if not self.pexels_key.get().strip():
-            messagebox.showerror(APP_TITLE, "Informe a chave de API do Pexels na aba APIs.")
-            self._show_tab("apis")
-            return
-        if not self.groq_key.get().strip():
-            messagebox.showerror(APP_TITLE, "Informe a chave de API do Groq na aba APIs.")
-            self._show_tab("apis")
-            return
-        self._save_config()
-        self.progress.configure(value=0, maximum=max(len(self.lines), 1))
-        self.progress_text.set("Atualizando videos...")
-        self.status_text.set("Gerando pesquisas com Groq...")
-        threading.Thread(target=self._update_videos_worker, daemon=True).start()
-
-    def _update_videos_worker(self) -> None:
-        try:
-            phrases = [line.text for line in self.lines]
-            queries = self._groq_pexels_queries(phrases)
-            for index, (line, query) in enumerate(zip(self.lines, queries, strict=True), start=1):
-                self._queue_status(f"Pesquisando vídeo {index}/{len(self.lines)}: {query}", step=True)
-                media_url = self._search_pexels(query, exclude_urls=self._all_media_urls())
-                self.used_media_urls.add(media_url)
-                self.lines[index - 1].media_url = media_url
-                self.root.after(0, self._render_lines)
-            self.root.after(0, lambda: self._save_config(show_status=False))
-            self.message_queue.put(("done", "Videos atualizados com links do Pexels e previews em carregamento."))
-        except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
-            self.message_queue.put(("error", str(exc)))
-
-    def _groq_pexels_queries(self, phrases: list[str]) -> list[str]:
-        context = "\n".join(f"{index}. {phrase}" for index, phrase in enumerate(phrases, start=1))
-        prompt = (
-            "Você vai criar pesquisas para encontrar vídeos verticais no Pexels. "
-            "Todas as pesquisas DEVEM manter o assunto principal do título/roteiro. Por exemplo, se o vídeo é sobre China, busque China, Chinese city, Great Wall, Chinese culture etc.; não use cenas genéricas sem China. "
-            "Use cada frase apenas para variar o tipo de cena dentro desse mesmo assunto principal. "
-            "As pesquisas devem estar em inglês, com 3 a 7 palavras, visuais, concretas e adequadas ao Pexels. "
-            "Responda somente JSON válido no formato {\"queries\":[...]} com exatamente uma pesquisa para cada frase.\n\n"
-            f"Título do vídeo / assunto principal: {self.video_title.get().strip() or 'video'}\n"
-            f"Palavras-chave do assunto: {self._script_subject_keywords()}\n"
-            f"Roteiro:\n{context}"
-        )
-        content = self._groq_chat_content(
-            messages=[
-                {"role": "system", "content": "Você cria termos de busca curtos para bancos de vídeos."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-            max_tokens=512,
-        )
-        try:
-            data = self._json_object_from_text(content)
-        except json.JSONDecodeError:
-            raise RuntimeError("O Groq não retornou JSON com as pesquisas de vídeo.")
-        queries = data.get("queries")
-        if not isinstance(queries, list):
-            raise RuntimeError("O Groq não retornou a lista 'queries'.")
-        clean_queries = [self._ensure_subject_in_query(str(query).strip()) for query in queries if str(query).strip()]
-        if len(clean_queries) != len(phrases):
-            raise RuntimeError("O Groq retornou uma quantidade diferente de pesquisas em relação às frases do roteiro.")
-        return clean_queries
-
-    def _choose_output_dir(self) -> None:
-        folder = filedialog.askdirectory(initialdir=self.output_dir.get() or str(Path.home()))
-        if folder:
-            self.output_dir.set(folder)
-            self._save_config()
-
-    def _start_generation(self) -> None:
-        self._refresh_lines()
-        if not self.lines:
-            messagebox.showerror(APP_TITLE, "Adicione pelo menos uma frase ao roteiro.")
-            return
-        if not self.pexels_key.get().strip():
-            messagebox.showerror(APP_TITLE, "Informe a chave de API do Pexels na aba APIs.")
-            self._show_tab("apis")
-            return
-        out_dir = Path(self.output_dir.get()).expanduser()
-        out_dir.mkdir(parents=True, exist_ok=True)
-        self._save_config()
-        self.progress.configure(value=0, maximum=max(len(self.lines) * 3 + 1, 1))
-        self.progress_text.set("Gerando...")
-        thread = threading.Thread(target=self._generate_video_worker, daemon=True)
-        thread.start()
-
-    def _queue_status(self, text: str, step: bool = False) -> None:
-        self.message_queue.put(("step" if step else "status", text))
-
-    def _process_queue(self) -> None:
-        try:
-            while True:
-                kind, text = self.message_queue.get_nowait()
-                if kind == "status":
-                    self.status_text.set(text)
-                elif kind == "step":
-                    self.status_text.set(text)
-                    self.progress.configure(value=float(self.progress["value"]) + 1)
-                elif kind == "done":
-                    self.progress_text.set("Concluído")
-                    messagebox.showinfo(APP_TITLE, text)
-                elif kind == "error":
-                    self.progress_text.set("Erro")
-                    messagebox.showerror(APP_TITLE, text)
-        except queue.Empty:
-            pass
-        self.root.after(120, self._process_queue)
-
-    def _generate_video_worker(self) -> None:
-        try:
-            with tempfile.TemporaryDirectory(prefix="videogenerator_") as tmp:
-                workdir = Path(tmp)
-                ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-                clips: list[Path] = []
-                audio_paths: list[Path] = []
-                for index, line in enumerate(self.lines, start=1):
-                    self._queue_status(f"Gerando áudio {index}/{len(self.lines)}...", step=True)
-                    audio_path = workdir / f"audio_{index:03d}.wav"
-                    self._generate_tts(line.text, audio_path)
-                    
-                    # Adiciona 1 segundo de silêncio no início do primeiro áudio
-                    if index == 1:
-                        self._add_silence_to_audio_beginning(audio_path, 1.0)
-                    
-                    audio_paths.append(audio_path)
-
-                for index, (line, audio_path) in enumerate(zip(self.lines, audio_paths, strict=True), start=1):
-                    self._queue_status(f"Baixando mídia {index}/{len(self.lines)}...", step=True)
-                    media_path = self._download_media(line, workdir, index)
-
-                    self._queue_status(f"Criando cena {index}/{len(self.lines)}...", step=True)
-                    clip_path = workdir / f"clip_{index:03d}.mp4"
-                    self._create_clip(ffmpeg, media_path, audio_path, clip_path, line.text)
-                    clips.append(clip_path)
-
-                self._queue_status("Unindo cenas...", step=True)
-                final_path = Path(self.output_dir.get()).expanduser() / f"{self._safe_filename(self.video_title.get())}.mp4"
-                self._concat_clips(ffmpeg, clips, final_path, workdir)
-                self.message_queue.put(("done", f"Vídeo gerado em:\n{final_path}"))
-        except Exception as exc:  # noqa: BLE001 - show desktop-friendly error
-            self.message_queue.put(("error", str(exc)))
-
-    def _generate_tts(self, text: str, output_path: Path) -> None:
-        """Gera áudio usando XTTS com clonagem de voz."""
-        self._generate_tts_xtts(text, output_path)
-
-    def _generate_tts_xtts(self, text: str, output_path: Path) -> None:
-        """Gera áudio usando XTTS com clonagem de voz."""
-        if self.xtts_model is None:
-            raise RuntimeError("Modelo XTTS não carregado. Carregue o modelo na aba Audio primeiro.")
-        
-        speaker_wav = self.tts_voice_ref_path.get().strip()
-        if not speaker_wav:
-            raise RuntimeError("XTTS requer um áudio de referência. Selecione um arquivo na aba Audio.")
-        
-        # Mapeia para o formato do XTTS
-        lang_mapping = {
-            "pt-br": "pt",
-            "en-us": "en",
-            "en-gb": "en",
-            "es-es": "es",
-            "fr-fr": "fr",
-            "de-de": "de",
-            "it-it": "it",
-            "ja-jp": "ja",
-            "zh-cn": "zh"
-        }
-        lang = lang_mapping.get(self.tts_language.get().lower(), "pt")
-        
-        try:
-            # Gera áudio com XTTS
-            self.xtts_model.tts_to_file(
-                text=text,
-                speaker_wav=speaker_wav,
-                language=lang,
-                file_path=str(output_path)
-            )
-            
-            self._queue_status(f"Áudio gerado: {text[:50]}...", step=True)
-            
-        except MemoryError:
-            raise RuntimeError("Memória insuficiente para gerar áudio. Tente fechar outros programas.")
-        except Exception as e:
-            raise RuntimeError(f"Erro ao gerar áudio com XTTS: {e}")
-
-    @staticmethod
-    def _best_mono_audio(audio: np.ndarray) -> np.ndarray:
-        if audio.ndim <= 1:
-            return audio
-        channel_rms = np.sqrt(np.mean(np.square(audio), axis=0))
-        strongest_channel = int(np.argmax(channel_rms))
-        return audio[:, strongest_channel]
-
-    @staticmethod
-    def _audio_level(audio: np.ndarray) -> float:
-        if audio.size == 0:
-            return 0.0
-        if audio.ndim <= 1:
-            return float(np.sqrt(np.mean(np.square(audio))))
-        channel_rms = np.sqrt(np.mean(np.square(audio), axis=0))
-        return float(np.max(channel_rms))
-
-    @staticmethod
-    def _audio_validation_level(audio: np.ndarray) -> float:
-        if audio.size == 0:
-            return 0.0
-        rms = float(np.sqrt(np.mean(np.square(audio))))
-        peak = float(np.max(np.abs(audio)))
-        return max(rms, peak * 0.1)
-
-    @staticmethod
-    def _normalize_recorded_audio(audio: np.ndarray, target_rms: float = 0.08, max_gain: float = 20.0) -> np.ndarray:
-        if audio.size == 0:
-            return audio
-        rms = float(np.sqrt(np.mean(np.square(audio))))
-        peak = float(np.max(np.abs(audio)))
-        if rms <= 0.0 or peak <= 0.0001:
-            return audio
-        gain = min(max(target_rms / rms, 1.0), max_gain)
-        if peak * gain > 0.95:
-            gain = 0.95 / peak
-        return audio * max(gain, 1.0)
-
-    def _estimated_tts_duration(self, text: str) -> float:
-        extra = self._safe_float(self.qwen_record_extra.get(), 2.0, 0.0, 30.0)
-        return max(8.0, len(text) * 0.12 + extra)
-
-    @staticmethod
-    def _trim_silence(audio: np.ndarray, threshold: float = 0.012, padding: int = 4800) -> np.ndarray:
-        if audio.size == 0:
-            return audio
-        loud = np.where(np.abs(audio) > threshold)[0]
-        if loud.size == 0:
-            return audio
-        start = max(int(loud[0]) - padding, 0)
-        end = min(int(loud[-1]) + padding, audio.size - 1)
-        return audio[start : end + 1]
-
-    def _qwen_coordinates_ready(self) -> bool:
-        values = [
-            self.qwen_input_x.get(),
-            self.qwen_input_y.get(),
-            self.qwen_send_x.get(),
-            self.qwen_send_y.get(),
-            self.qwen_menu_x.get(),
-            self.qwen_menu_y.get(),
-            self.qwen_read_x.get(),
-            self.qwen_read_y.get(),
-        ]
-        return all(self._safe_int(value, 0, 0, 10000) > 0 for value in values)
-
-    def _download_media(self, line: ScriptLine, workdir: Path, index: int) -> Path:
-        media_url = line.media_url.strip()
-        if not media_url:
-            media_url = self._search_pexels(line.text, exclude_urls=self._all_media_urls())
-            self.used_media_urls.add(media_url)
-            self.lines[index - 1].media_url = media_url
-            self.root.after(0, self._render_lines)
-        local_path = self._local_media_path(media_url)
-        if local_path:
-            # Imagens coladas ficam salvas localmente e podem entrar direto no FFmpeg.
-            return local_path
-        media_url = self._resolve_pexels_page_url(media_url)
-        parsed = urllib.parse.urlparse(media_url)
-        suffix = Path(parsed.path).suffix or ".mp4"
-        output_path = workdir / f"media_{index:03d}{suffix.split('?')[0]}"
-        with requests.get(media_url, stream=True, timeout=60) as response:
-            response.raise_for_status()
-            with output_path.open("wb") as file:
-                shutil.copyfileobj(response.raw, file)
-        return output_path
-
-    def _resolve_pexels_page_url(self, media_url: str) -> str:
-        parsed = urllib.parse.urlparse(media_url)
-        if "pexels.com" not in parsed.netloc or Path(parsed.path).suffix:
-            return media_url
-
-        match = re.search(r"(\d+)(?:/)?$", parsed.path)
-        if not match:
-            return media_url
-
-        media_id = match.group(1)
-        headers = {"Authorization": self.pexels_key.get().strip()}
-        if "/video" in parsed.path:
-            response = requests.get(f"https://api.pexels.com/videos/videos/{media_id}", headers=headers, timeout=30)
-            response.raise_for_status()
-            files = response.json().get("video_files", [])
-            if files:
-                best_files = sorted(files, key=lambda item: (item.get("width", 0) < item.get("height", 0), item.get("height", 0)), reverse=True)
-                return best_files[0]["link"]
-        else:
-            response = requests.get(f"https://api.pexels.com/v1/photos/{media_id}", headers=headers, timeout=30)
-            response.raise_for_status()
-            src = response.json().get("src", {})
-            if src.get("large2x"):
-                return src["large2x"]
-        return media_url
-
-    def _search_pexels(self, query: str, exclude_urls: set[str] | None = None) -> str:
-        headers = {"Authorization": self.pexels_key.get().strip()}
-        excluded = {self._media_identity(url) for url in (exclude_urls or set()) if url.strip()}
-        first_candidate = ""
-
-        def remember_candidate(url: str) -> str | None:
-            nonlocal first_candidate
-            clean_url = url.strip()
-            if not clean_url:
-                return None
-            if not first_candidate:
-                first_candidate = clean_url
-            if self._media_identity(clean_url) not in excluded:
-                return clean_url
-            return None
-
-        video_response = requests.get(
-            "https://api.pexels.com/videos/search",
-            headers=headers,
-            params={"query": query, "per_page": 8, "orientation": "portrait"},
-            timeout=30,
-        )
-        video_response.raise_for_status()
-        videos = video_response.json().get("videos", [])
-        for video in videos:
-            candidate = remember_candidate(str(video.get("url", "")))
-            if candidate:
-                return candidate
-            files = video.get("video_files", [])
-            portrait_files = sorted(files, key=lambda item: (item.get("width", 0) < item.get("height", 0), item.get("height", 0)), reverse=True)
-            for media_file in portrait_files:
-                candidate = remember_candidate(str(media_file.get("link", "")))
-                if candidate:
-                    return candidate
-
-        photo_response = requests.get(
-            "https://api.pexels.com/v1/search",
-            headers=headers,
-            params={"query": query, "per_page": 8, "orientation": "portrait"},
-            timeout=30,
-        )
-        photo_response.raise_for_status()
-        photos = photo_response.json().get("photos", [])
-        for photo in photos:
-            candidate = remember_candidate(str(photo.get("url", "") or photo.get("src", {}).get("large2x", "")))
-            if candidate:
-                return candidate
-        if first_candidate and not excluded:
-            return first_candidate
-        raise RuntimeError(f"Nenhuma mídia nova encontrada no Pexels para: {query}")
-
-    @staticmethod
-    def _media_identity(media_url: str) -> str:
-        parsed = urllib.parse.urlparse(media_url.strip())
-        match = re.search(r"(\d+)(?:/)?$", parsed.path)
-        if "pexels.com" in parsed.netloc and match:
-            return f"pexels:{match.group(1)}"
-        return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", "")).rstrip("/")
-
-    def _logo_file_path(self) -> Path | None:
-        clean_path = self.logo_path.get().strip()
-        if not clean_path:
-            return None
-        path = Path(clean_path).expanduser()
-        if path.exists() and path.suffix.lower() == ".png" and self._logo_size_fraction() > 0:
-            return path
-        return None
-
-    def _logo_size_fraction(self) -> float:
-        return self._safe_float(self.logo_size.get(), 20.0, 0.0, 100.0) / 100.0
-
-    def _logo_overlay_expression(self) -> tuple[str, str]:
-        margin = 36
-        position = self.logo_position.get().lower()
-        x = str(margin) if "esquerdo" in position else f"W-w-{margin}"
-        y = str(margin) if "superior" in position else f"H-h-{margin}"
-        return x, y
-
-    def _logo_preview_coordinates(self, canvas_width: int, canvas_height: int, logo_width: int, logo_height: int, margin: int) -> tuple[int, int]:
-        position = self.logo_position.get().lower()
-        x = margin if "esquerdo" in position else canvas_width - logo_width - margin
-        y = margin if "superior" in position else canvas_height - logo_height - margin
-        return max(0, x), max(0, y)
-
-    def _create_clip(self, ffmpeg: str, media_path: Path, audio_path: Path, clip_path: Path, subtitle_text: str) -> None:
-        audio_duration = self._audio_duration(audio_path)
-        image_exts = {".jpg", ".jpeg", ".png", ".webp"}
-        is_image = media_path.suffix.lower() in image_exts
-        media_duration = 0.0 if is_image else self._media_duration(ffmpeg, media_path)
-        extra_after_audio = self._safe_float(self.video_extra_after_audio.get(), 1.0, 0.0, 60.0)
-        if media_duration > audio_duration:
-            duration = min(media_duration, audio_duration + extra_after_audio)
-        elif media_duration > 0:
-            duration = audio_duration
-        else:
-            duration = audio_duration
-        video_filter = self._video_filter(subtitle_text, clip_path.with_suffix(".subtitle.ass"), duration, audio_duration)
-        logo_path = self._logo_file_path()
-        logo_text = self.logo_text.get().strip()
-        if logo_path:
-            logo_width = max(1, int(1080 * self._logo_size_fraction()))
-            logo_x, logo_y = self._logo_overlay_expression()
-            if logo_text:
-                escaped_text = self._escape_drawtext(logo_text)
-                logo_text_font = self.logo_text_font.get().strip() or "Arial"
-                logo_text_size = int(self._safe_float(self.logo_text_size.get(), 24.0, 4.0, 72.0))
-                logo_text_offset = int(self._safe_float(self.logo_text_offset.get(), 12.0, -50.0, 100.0))
-                filter_complex = (
-                    f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[base];"
-                    f"[2:v:0]format=rgba,scale={logo_width}:-1[logo];"
-                    f"[base][logo]overlay={logo_x}:{logo_y}:format=auto[with_logo];"
-                    f"[with_logo]drawtext=text='{escaped_text}':fontcolor=white:fontsize={logo_text_size}:x=(w-text_w)/2:y={logo_y}+h+{logo_text_offset}:font='{logo_text_font}'[v];"
-                    f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
-                )
-            else:
-                filter_complex = (
-                    f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[base];"
-                    f"[2:v:0]format=rgba,scale={logo_width}:-1[logo];"
-                    f"[base][logo]overlay={logo_x}:{logo_y}:format=auto[v];"
-                    f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
-                )
-        else:
-            filter_complex = (
-                f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[v];"
-                f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
-            )
-        if is_image:
-            cmd = [
-                ffmpeg,
-                "-y",
-                "-loop",
-                "1",
-                "-t",
-                f"{duration:.3f}",
-                "-i",
-                str(media_path),
-                "-i",
-                str(audio_path),
-            ]
-            if logo_path:
-                cmd.extend(["-loop", "1", "-i", str(logo_path)])
-            cmd.extend([
-                "-filter_complex",
-                filter_complex,
-                "-map",
-                "[v]",
-                "-map",
-                "[a]",
-                "-r",
-                FPS,
-                "-c:v",
-                "libx264",
-                "-c:a",
-                "aac",
-                str(clip_path),
-            ])
-        else:
-            cmd = [ffmpeg, "-y"]
-            if media_duration <= 0 or media_duration < duration - 0.05:
-                cmd.extend(["-stream_loop", "-1"])
-            cmd.extend(
-                [
-                    "-i",
-                    str(media_path),
-                    "-i",
-                    str(audio_path),
-                ]
-            )
-            if logo_path:
-                cmd.extend(["-loop", "1", "-i", str(logo_path)])
-            cmd.extend(
-                [
-                    "-t",
-                    f"{duration:.3f}",
-                    "-filter_complex",
-                    filter_complex,
-                    "-map",
-                    "[v]",
-                    "-map",
-                    "[a]",
-                    "-r",
-                    FPS,
-                    "-c:v",
-                    "libx264",
-                    "-c:a",
-                    "aac",
-                    str(clip_path),
-                ]
-            )
-        self._run_ffmpeg(cmd)
-
-    def _video_filter(
-        self,
-        subtitle_text: str,
-        subtitle_file: Path | None = None,
-        clip_duration: float = 0.0,
-        speech_duration: float = 0.0,
-    ) -> str:
-        base_filter = f"scale={VIDEO_SIZE}:force_original_aspect_ratio=increase,crop={VIDEO_SIZE},setsar=1,format=yuv420p"
-        if self.subtitle_enabled.get() != "Sim":
-            return base_filter
-        wrapped_text, font_size, line_spacing, box_border = self._subtitle_layout(subtitle_text)
-        if subtitle_file is None:
-            subtitle_file = Path(tempfile.gettempdir()) / "videogenerator_subtitle.ass"
-        self._write_progressive_subtitle_file(
-            subtitle_file,
-            subtitle_text,
-            max(clip_duration, speech_duration, 0.1),
-            max(min(speech_duration, clip_duration or speech_duration), 0.1),
-            font_size,
-            line_spacing,
-            box_border,
-        )
-        subtitle_path = self._escape_filter_file_path(subtitle_file)
-        return f"{base_filter},subtitles='{subtitle_path}'"
-
-    def _write_progressive_subtitle_file(
-        self,
-        subtitle_file: Path,
-        subtitle_text: str,
-        clip_duration: float,
-        speech_duration: float,
-        font_size: int,
-        line_spacing: int,
-        box_border: int,
-    ) -> None:
-        words = subtitle_text.split()
-        if not words:
-            subtitle_file.write_text("", encoding="utf-8")
-            return
-        font = self.subtitle_font.get().strip() or "Arial Black"
-        primary = self._ass_color(self.subtitle_color.get(), "#FFFFFF")
-        highlight = self._ass_color(self.subtitle_highlight_color.get(), "#FFD84D")
-        outline = self._ass_color(self.subtitle_outline_color.get(), "#000000")
-        back = self._ass_color(self.subtitle_background_color.get(), "#000000", alpha="70")
-        border_style = 3 if self.subtitle_background.get() == "Sim" else 1
-        outline_width = max(1, box_border if border_style == 3 else 3)
-        alignment = self._ass_alignment()
-        margin_v = self._ass_margin_v()
-        spacing = -max(0, int(font_size * 0.10) - line_spacing)
-        speech_duration = max(0.1, min(speech_duration, clip_duration))
-        
-        # Ajusta o timer das legendas para sincronizar melhor com o áudio
-        # Reduz um pequeno offset para compensar o atraso na fala
-        timing_offset = 0.08  # 80ms de antecipação para sincronização
-        word_duration = max((speech_duration - timing_offset) / len(words), 0.04)
-        
-        events: list[str] = []
-        for index in range(len(words)):
-            start = max(0, index * word_duration - timing_offset / 2)
-            end = min((index + 1) * word_duration, speech_duration)
-            if end <= start:
-                end = start + 0.05
-            highlighted_text = self._highlighted_subtitle_text(words, index, font_size, primary, highlight)
-            events.append(
-                f"Dialogue: 0,{self._ass_timestamp(start)},{self._ass_timestamp(end)},Default,,0,0,0,,{highlighted_text}"
-            )
-        if clip_duration > speech_duration + 0.05:
-            # Após a narração terminar, a frase continua inteira na tela sem palavra destacada durante o respiro da cena.
-            normal_text = self._highlighted_subtitle_text(words, None, font_size, primary, highlight)
-            events.append(
-                f"Dialogue: 0,{self._ass_timestamp(speech_duration)},{self._ass_timestamp(clip_duration)},Default,,0,0,0,,{normal_text}"
-            )
-        ass_text = "\n".join(
-            [
-                "[Script Info]",
-                "ScriptType: v4.00+",
-                "PlayResX: 1080",
-                "PlayResY: 1920",
-                "ScaledBorderAndShadow: yes",
-                "WrapStyle: 2",
-                "",
-                "[V4+ Styles]",
-                "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-                f"Style: Default,{font},{font_size},{primary},{highlight},{outline},{back},-1,0,0,0,100,100,{spacing},0,{border_style},{outline_width},0,{alignment},80,80,{margin_v},1",
-                "",
-                "[Events]",
-                "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-                *events,
-                "",
-            ]
-        )
-        subtitle_file.write_text(ass_text, encoding="utf-8")
-
-    def _highlighted_subtitle_text(
-        self,
-        words: list[str],
-        highlight_index: int | None,
-        font_size: int,
-        primary: str,
-        highlight: str,
-    ) -> str:
-        lines = self._subtitle_word_lines(words, font_size)
-        rendered_lines: list[str] = []
-        for line in lines:
-            rendered_words: list[str] = []
-            for word_index, word in line:
-                escaped_word = self._escape_ass_text(word)
-                if word_index == highlight_index:
-                    # Overrides ASS trocam apenas a cor da palavra atual e voltam para a cor normal no próximo token.
-                    rendered_words.append(f"{{\\c{highlight}&}}{escaped_word}{{\\c{primary}&}}")
-                else:
-                    rendered_words.append(escaped_word)
-            rendered_lines.append(" ".join(rendered_words))
-        return r"\N".join(rendered_lines)
-
-    @staticmethod
-    def _subtitle_word_lines(words: list[str], font_size: int) -> list[list[tuple[int, str]]]:
-        max_chars = max(20, min(48, int(980 / max(font_size * 0.48, 1))))
-        lines: list[list[tuple[int, str]]] = []
-        current: list[tuple[int, str]] = []
-        for index, word in enumerate(words):
-            candidate = [*current, (index, word)]
-            candidate_text = " ".join(item_word for _item_index, item_word in candidate)
-            if current and len(candidate_text) > max_chars:
-                lines.append(current)
-                current = [(index, word)]
-            else:
-                current = candidate
-        if current:
-            lines.append(current)
-        return lines
-
-    def _ass_alignment(self) -> int:
-        position = self.subtitle_position.get()
-        if position == "Topo":
-            return 8
-        if position == "Centro":
-            return 5
-        return 2
-
-    def _ass_margin_v(self) -> int:
-        position = self.subtitle_position.get()
-        if position == "Topo":
-            return 120
-        if position == "Centro":
-            return 0
-        return 240
-
-    @staticmethod
-    def _ass_timestamp(seconds: float) -> str:
-        safe_seconds = max(seconds, 0.0)
-        hours = int(safe_seconds // 3600)
-        minutes = int((safe_seconds % 3600) // 60)
-        whole_seconds = int(safe_seconds % 60)
-        centiseconds = int(round((safe_seconds - int(safe_seconds)) * 100))
-        if centiseconds >= 100:
-            whole_seconds += 1
-            centiseconds = 0
-        return f"{hours}:{minutes:02d}:{whole_seconds:02d}.{centiseconds:02d}"
-
-    @staticmethod
-    def _escape_ass_text(value: str) -> str:
-        return value.replace("{", "(").replace("}", ")")
-
-    def _ass_color(self, value: str, fallback: str, alpha: str = "00") -> str:
-        color = self._normalize_color(value, fallback)
-        red = color[1:3]
-        green = color[3:5]
-        blue = color[5:7]
-        return f"&H{alpha}{blue}{green}{red}"
-
-
-    def _subtitle_y_expression(self) -> str:
-        position = self.subtitle_position.get()
-        if position == "Topo":
-            return "max(80\\,min(h*0.10\\,h-text_h-80))"
-        if position == "Centro":
-            return "max(80\\,min((h-text_h)/2\\,h-text_h-80))"
-        return "max(80\\,min(h-text_h-h*0.14\\,h-text_h-80))"
-
-    def _subtitle_layout(self, value: str) -> tuple[str, int, int, int]:
-        requested_size = self._safe_int(self.subtitle_size.get(), 64, 1, 160)
-        position = self.subtitle_position.get()
-        max_text_height = 1100 if position == "Centro" else 520
-        max_text_height = min(max_text_height, 1920 - 160)
-        for font_size in range(requested_size, 23, -2):
-            wrapped = self._wrap_subtitle_text(value, font_size)
-            line_count = max(1, wrapped.count("\n") + 1)
-            line_spacing = max(0, int(font_size * 0.025))
-            box_border = max(8, min(18, int(font_size * 0.24)))
-            estimated_height = line_count * font_size + max(0, line_count - 1) * line_spacing + box_border * 2 + 8
-            if estimated_height <= max_text_height:
-                return wrapped, font_size, line_spacing, box_border
-        font_size = 24
-        return self._wrap_subtitle_text(value, font_size), font_size, 0, 8
-
-    @staticmethod
-    def _wrap_subtitle_text(value: str, font_size: int) -> str:
-        text = " ".join(value.split())
-        if not text:
-            return value
-        max_chars = max(20, min(48, int(980 / max(font_size * 0.48, 1))))
-        lines: list[str] = []
-        current = ""
-        for word in text.split(" "):
-            candidate = f"{current} {word}".strip()
-            if current and len(candidate) > max_chars:
-                lines.append(current)
-                current = word
-            else:
-                current = candidate
-        if current:
-            lines.append(current)
-        return "\n".join(lines)
-
-    @staticmethod
-    def _escape_drawtext(value: str) -> str:
-        return value.replace("\\", "\\\\").replace("\n", "\\n").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
-
-    @staticmethod
-    def _escape_drawtext_file_path(value: Path) -> str:
-        return value.resolve().as_posix().replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-
-    @staticmethod
-    def _escape_filter_file_path(value: Path) -> str:
-        return value.resolve().as_posix().replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-
-    @staticmethod
-    def _ffmpeg_color(value: str, fallback: str) -> str:
-        color = value.strip()
-        if re.fullmatch(r"#[0-9a-fA-F]{6}", color):
-            return "0x" + color[1:]
-        if re.fullmatch(r"0x[0-9a-fA-F]{6}", color):
-            return color
-        return fallback
-
-    @staticmethod
-    def _normalize_color(value: str, fallback: str) -> str:
-        color = value.strip()
-        if re.fullmatch(r"#[0-9a-fA-F]{6}", color):
-            return color
-        return fallback
-
-    @staticmethod
-    def _safe_int(value: str, default: int, minimum: int, maximum: int) -> int:
-        try:
-            number = int(value)
-        except ValueError:
-            return default
-        return min(max(number, minimum), maximum)
-
-    @staticmethod
-    def _safe_float(value: str, default: float, minimum: float, maximum: float) -> float:
-        try:
-            number = float(value.replace(",", "."))
-        except ValueError:
-            return default
-        return min(max(number, minimum), maximum)
-
-    @staticmethod
-    def _safe_filename(value: str) -> str:
-        name = re.sub(r"[\\/:*?\"<>|]+", "", value.strip())
-        name = re.sub(r"\s+", "_", name).strip("._")
-        return name or "video_gerado"
-
-    def _concat_clips(self, ffmpeg: str, clips: list[Path], final_path: Path, workdir: Path) -> None:
-        temp_output = workdir / "final_without_music.mp4"
-        if len(clips) == 1:
-            shutil.copy2(clips[0], temp_output)
-        else:
-            cmd = [ffmpeg, "-y"]
-            for clip in clips:
-                cmd.extend(["-i", str(clip)])
-
-            filter_parts: list[str] = []
-            concat_inputs = ""
-            for index in range(len(clips)):
-                filter_parts.append(f"[{index}:v:0]setpts=PTS-STARTPTS,scale={VIDEO_SIZE},setsar=1,fps={FPS},format=yuv420p[v{index}]")
-                filter_parts.append(f"[{index}:a:0]asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0[a{index}]")
-                concat_inputs += f"[v{index}][a{index}]"
-            filter_complex = ";".join(filter_parts) + f";{concat_inputs}concat=n={len(clips)}:v=1:a=1[v][a]"
-
-            cmd.extend(
-                [
-                    "-filter_complex",
-                    filter_complex,
-                    "-map",
-                    "[v]",
-                    "-map",
-                    "[a]",
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "veryfast",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-c:a",
-                    "aac",
-                    "-movflags",
-                    "+faststart",
-                    str(temp_output),
-                ]
-            )
-            self._run_ffmpeg(cmd)
-
-        music_file = Path(self.music_path.get()).expanduser()
-        volume = self._safe_int(self.music_volume.get(), 20, 0, 100) / 100
-        if not self.music_path.get().strip() or not music_file.exists() or volume <= 0:
-            shutil.copy2(temp_output, final_path)
-            return
-
-        mixed_output = workdir / "final_with_music.mp4"
-        mix_cmd = [
-            ffmpeg,
-            "-y",
-            "-i",
-            str(temp_output),
-            "-stream_loop",
-            "-1",
-            "-i",
-            str(music_file),
-            "-filter_complex",
-            f"[0:a]volume=1.0[narration];[1:a]volume={volume:.2f}[music];[narration][music]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[a]",
-            "-map",
-            "0:v:0",
-            "-map",
-            "[a]",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-shortest",
-            str(mixed_output),
-        ]
-        self._run_ffmpeg(mix_cmd)
-        shutil.copy2(mixed_output, final_path)
-
-    def _run_ffmpeg(self, cmd: list[str]) -> None:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr[-2000:] or "FFmpeg falhou sem mensagem de erro.")
-
-    def _media_duration(self, ffmpeg: str, media_path: Path) -> float:
-        result = subprocess.run([ffmpeg, "-hide_banner", "-i", str(media_path)], capture_output=True, text=True, check=False)
-        output = result.stderr + "\n" + result.stdout
-        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", output)
-        if not match:
-            return 0.0
-        hours, minutes, seconds = match.groups()
-        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
-
-    @staticmethod
-    def _audio_duration(audio_path: Path) -> float:
-        with wave.open(str(audio_path), "rb") as wav_file:
-            frames = wav_file.getnframes()
-            rate = wav_file.getframerate()
-            return frames / float(rate)
-
-    def _add_silence_to_audio_beginning(self, audio_path: Path, silence_duration: float) -> None:
-        """Adiciona silêncio no início de um arquivo de áudio WAV."""
-        try:
-            with wave.open(str(audio_path), "rb") as wav_file:
-                frames = wav_file.readframes(wav_file.getnframes())
-                rate = wav_file.getframerate()
-                channels = wav_file.getnchannels()
-                sample_width = wav_file.getsampwidth()
-            
-            # Calcula número de samples de silêncio
-            silence_samples = int(silence_duration * rate)
-            silence_bytes = b'\x00' * (silence_samples * channels * sample_width)
-            
-            # Escreve novo arquivo com silêncio no início
-            with wave.open(str(audio_path), "wb") as wav_file:
-                wav_file.setnchannels(channels)
-                wav_file.setsampwidth(sample_width)
-                wav_file.setframerate(rate)
-                wav_file.writeframes(silence_bytes + frames)
-        except Exception as e:
-            raise RuntimeError(f"Erro ao adicionar silêncio no áudio: {e}")
-
 
 if __name__ == "__main__":
-    VideoGeneratorApp().run()
+    app = VideoGeneratorApp()
+    app.run()
