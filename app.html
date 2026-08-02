@@ -1,0 +1,1422 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VideoGenerator - Web App</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f6f7fb;
+            color: #111827;
+            line-height: 1.6;
+            padding-bottom: 80px;
+        }
+
+        .container {
+            max-width: 1040px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            margin-bottom: 20px;
+        }
+
+        header h1 {
+            font-size: 24px;
+            color: #111827;
+            margin-bottom: 4px;
+        }
+
+        header p {
+            font-size: 10px;
+            color: #657084;
+        }
+
+        nav {
+            background-color: #eef1f8;
+            padding: 6px;
+            margin-bottom: 12px;
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        nav button {
+            border: none;
+            background-color: #ffffff;
+            color: #374151;
+            padding: 9px 18px;
+            font-size: 10px;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+
+        nav button:hover {
+            background-color: #f0f0f0;
+        }
+
+        nav button.active {
+            background-color: #5b6cff;
+            color: #ffffff;
+        }
+
+        .tab-content {
+            background-color: #ffffff;
+            padding: 24px;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .tab-title {
+            font-size: 17px;
+            font-weight: bold;
+            color: #111827;
+            margin-bottom: 4px;
+        }
+
+        .tab-description {
+            font-size: 10px;
+            color: #657084;
+            margin-bottom: 22px;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        label {
+            display: block;
+            font-size: 10px;
+            font-weight: bold;
+            color: #111827;
+            margin-bottom: 6px;
+        }
+
+        input[type="text"],
+        input[type="password"],
+        input[type="number"],
+        textarea,
+        select {
+            width: 100%;
+            padding: 10px 12px;
+            border: none;
+            background-color: #f3f5fb;
+            color: #111827;
+            font-size: 11px;
+            border-radius: 4px;
+            font-family: inherit;
+        }
+
+        input:focus,
+        textarea:focus,
+        select:focus {
+            outline: 2px solid #5b6cff;
+            outline-offset: 2px;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+
+        .hint {
+            font-size: 8px;
+            color: #657084;
+            margin-top: 4px;
+        }
+
+        button.primary {
+            background-color: #5b6cff;
+            color: #ffffff;
+            border: none;
+            padding: 10px 18px;
+            font-size: 10px;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background-color 0.2s;
+        }
+
+        button.primary:hover {
+            background-color: #4657e8;
+        }
+
+        button.secondary {
+            background-color: #eef1ff;
+            color: #27319f;
+            border: none;
+            padding: 9px 14px;
+            font-size: 10px;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background-color 0.2s;
+        }
+
+        button.secondary:hover {
+            background-color: #dde0ff;
+        }
+
+        button.dark {
+            background-color: #111827;
+            color: #ffffff;
+            border: none;
+            padding: 10px 18px;
+            font-size: 10px;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background-color 0.2s;
+        }
+
+        button.dark:hover {
+            background-color: #2a3446;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 12px;
+            flex-wrap: wrap;
+        }
+
+        .script-list {
+            background-color: #f3f5fb;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 14px;
+        }
+
+        .script-item {
+            background-color: #ffffff;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .script-item-text {
+            flex: 1;
+            font-size: 10px;
+            color: #111827;
+        }
+
+        .script-item-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        .script-item-actions button {
+            padding: 6px 10px;
+            font-size: 9px;
+        }
+
+        .progress-container {
+            margin-top: 20px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background-color: #edf0f7;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background-color: #5b6cff;
+            width: 0%;
+            transition: width 0.3s;
+        }
+
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            font-size: 10px;
+            color: #374151;
+            margin-top: 12px;
+            padding: 8px 0;
+        }
+
+        .preview-box {
+            width: 300px;
+            height: 500px;
+            background-color: #111827;
+            border-radius: 4px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .preview-frame {
+            position: absolute;
+            top: 28px;
+            left: 20px;
+            right: 20px;
+            bottom: 28px;
+            border: 2px solid #657084;
+            background-size: cover;
+            background-position: center;
+        }
+
+        .preview-subtitle {
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+            text-align: center;
+            max-width: 80%;
+            background-color: transparent;
+        }
+
+        .two-column {
+            display: flex;
+            gap: 18px;
+        }
+
+        .two-column > div:first-child {
+            flex: 1;
+        }
+
+        .color-input-wrapper {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .color-input-wrapper input[type="color"] {
+            width: 40px;
+            height: 36px;
+            padding: 2px;
+            border: none;
+            background-color: #f3f5fb;
+            cursor: pointer;
+        }
+
+        .color-input-wrapper input[type="text"] {
+            flex: 1;
+        }
+
+        .card {
+            background-color: #f8f9fd;
+            padding: 14px;
+            border-radius: 4px;
+            margin-bottom: 12px;
+        }
+
+        .card-title {
+            font-size: 11px;
+            font-weight: bold;
+            color: #111827;
+            margin-bottom: 8px;
+        }
+
+        .logo-preview {
+            width: 300px;
+            height: 500px;
+            background-color: #111827;
+            border-radius: 4px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .logo-preview img {
+            position: absolute;
+            width: auto;
+            height: auto;
+            max-width: 80px;
+            max-height: 80px;
+            object-fit: contain;
+        }
+
+        .logo-preview-text {
+            position: absolute;
+            font-weight: bold;
+        }
+
+        /* Botão flutuante Gerar Vídeo */
+        .floating-generate-btn {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: #5b6cff;
+            color: #ffffff;
+            border: none;
+            padding: 16px 24px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(91, 108, 255, 0.4);
+            z-index: 1000;
+            transition: all 0.2s;
+        }
+
+        .floating-generate-btn:hover {
+            background-color: #4657e8;
+            box-shadow: 0 6px 16px rgba(91, 108, 255, 0.5);
+        }
+
+        /* Log flutuante */
+        .floating-log {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            background-color: #111827;
+            color: #ffffff;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 10px;
+            max-width: 300px;
+            max-height: 150px;
+            overflow-y: auto;
+            z-index: 1000;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            display: none;
+        }
+
+        .floating-log.show {
+            display: block;
+        }
+
+        .floating-log-entry {
+            margin-bottom: 4px;
+            opacity: 0.8;
+        }
+
+        .floating-log-entry:last-child {
+            opacity: 1;
+            font-weight: bold;
+        }
+
+        .line-media-preview {
+            width: 80px;
+            height: 80px;
+            background-color: #f3f5fb;
+            border-radius: 4px;
+            background-size: cover;
+            background-position: center;
+            flex-shrink: 0;
+        }
+
+        @media (max-width: 768px) {
+            .two-column {
+                flex-direction: column;
+            }
+            
+            .preview-box,
+            .logo-preview {
+                width: 100%;
+                margin-top: 14px;
+            }
+
+            nav {
+                flex-direction: column;
+            }
+
+            nav button {
+                width: 100%;
+                text-align: left;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>VideoGenerator</h1>
+            <p>Gere vídeos verticais com IA, Pexels e legendas em poucos cliques.</p>
+        </header>
+
+        <nav>
+            <button class="active" data-tab="apis">APIs</button>
+            <button data-tab="roteiro">Roteiro</button>
+            <button data-tab="video">Vídeo</button>
+            <button data-tab="legendas">Legendas</button>
+            <button data-tab="logo">Logo</button>
+            <button data-tab="audio">Áudio</button>
+            <button data-tab="musica">Música</button>
+        </nav>
+
+        <!-- Tab APIs -->
+        <div id="tab-apis" class="tab-content active">
+            <h2 class="tab-title">Chaves de API</h2>
+            <p class="tab-description">As chaves e endpoints ficam salvos localmente no seu navegador.</p>
+            
+            <div class="form-group">
+                <label for="pexels-key">Pexels API</label>
+                <input type="password" id="pexels-key" placeholder="Cole sua chave da API do Pexels">
+            </div>
+            
+            <div class="form-group">
+                <label for="groq-key">Groq API</label>
+                <input type="password" id="groq-key" placeholder="Cole sua chave da API do Groq">
+            </div>
+            
+            <button class="dark" onclick="saveConfig()">Salvar chaves</button>
+        </div>
+
+        <!-- Tab Roteiro -->
+        <div id="tab-roteiro" class="tab-content">
+            <h2 class="tab-title">Roteiro</h2>
+            <p class="tab-description">Digite o título e depois uma frase por linha. O título será usado como nome do arquivo .mp4.</p>
+            
+            <div class="form-group">
+                <label for="video-title">Título</label>
+                <input type="text" id="video-title" value="video_gerado">
+            </div>
+            
+            <div class="form-group">
+                <label for="script-prompt">Prompt para o roteiro</label>
+                <textarea id="script-prompt" rows="4"></textarea>
+                <p class="hint">O que estiver digitado aqui será enviado para a IA</p>
+            </div>
+            
+            <div class="btn-group">
+                <button class="secondary" onclick="refreshLines()">Atualizar roteiro</button>
+                <button class="primary" onclick="generateScript()">Gerar roteiro</button>
+            </div>
+            
+            <div class="form-group" style="margin-top: 16px;">
+                <label for="script-text">Roteiro (uma frase por linha)</label>
+                <textarea id="script-text" rows="10">Hoje vamos falar sobre a China.
+Esse país é incrível.
+Vamos te provar.
+A Grande Muralha é impressionante.
+Pequim é uma cidade moderna.
+A culinária chinesa é diversificada.
+Os templos antigos contam histórias.
+A tecnologia avança rapidamente.
+A cultura milenar encanta visitantes.
+Você precisa conhecer a China.</textarea>
+            </div>
+        </div>
+
+        <!-- Tab Vídeo -->
+        <div id="tab-video" class="tab-content">
+            <h2 class="tab-title">Vídeo</h2>
+            <p class="tab-description">Escolha o link do Pexels para cada frase ou use a IA para encontrar vídeos.</p>
+            
+            <div class="btn-group">
+                <button class="secondary" onclick="refreshLines()">Sincronizar frases</button>
+                <button class="primary" onclick="updateVideos()">Atualizar vídeos</button>
+                <button class="secondary" onclick="chooseOutputDir()">Pasta de saída</button>
+            </div>
+            
+            <div class="form-group" style="margin-top: 12px;">
+                <label for="output-dir">Diretório de saída</label>
+                <input type="text" id="output-dir" value="C:/Users/Usuario/Videos">
+                <p class="hint">Onde os vídeos gerados serão salvos</p>
+            </div>
+            
+            <div class="form-group">
+                <label for="video-extra">Tempo extra após o áudio (segundos)</label>
+                <input type="number" id="video-extra" value="1" min="0" max="10" step="0.5">
+                <p class="hint">Padrão: 1. Use 0 para cortar exatamente no fim do áudio.</p>
+            </div>
+            
+            <div id="lines-container" class="script-list">
+                <!-- Linhas serão inseridas aqui via JavaScript -->
+            </div>
+        </div>
+
+        <!-- Tab Legendas -->
+        <div id="tab-legendas" class="tab-content">
+            <h2 class="tab-title">Legendas</h2>
+            <p class="tab-description">Configure como a frase de cada cena aparecerá por cima do vídeo.</p>
+            
+            <div class="two-column">
+                <div>
+                    <button class="dark" id="subtitle-toggle" onclick="toggleSubtitles()" style="margin-bottom: 14px;">Legendas Desligadas</button>
+                    <p id="subtitle-status" class="hint" style="margin-bottom: 14px; font-weight: bold;">Legendas: Desligadas</p>
+                    
+                    <div class="form-group">
+                        <label for="subtitle-position">Posição no vídeo</label>
+                        <select id="subtitle-position">
+                            <option value="Baixo">Baixo</option>
+                            <option value="Centro">Centro</option>
+                            <option value="Topo">Topo</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="subtitle-color">Cor da legenda</label>
+                        <div class="color-input-wrapper">
+                            <input type="color" id="subtitle-color-picker" value="#ffffff">
+                            <input type="text" id="subtitle-color" value="#FFFFFF">
+                        </div>
+                        <p class="hint">Ex.: #FFFFFF</p>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="subtitle-highlight">Cor de destaque</label>
+                        <div class="color-input-wrapper">
+                            <input type="color" id="subtitle-highlight-picker" value="#ffd84d">
+                            <input type="text" id="subtitle-highlight" value="#FFD84D">
+                        </div>
+                        <p class="hint">Cor da palavra falada no momento</p>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="subtitle-size">Tamanho</label>
+                        <input type="number" id="subtitle-size" value="64" min="1" max="160">
+                        <p class="hint">Ex.: 64</p>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="subtitle-background">Fundo</label>
+                        <select id="subtitle-background">
+                            <option value="Sim">Sim</option>
+                            <option value="Não">Não</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="subtitle-bg-color">Cor do fundo</label>
+                        <div class="color-input-wrapper">
+                            <input type="color" id="subtitle-bg-color-picker" value="#000000">
+                            <input type="text" id="subtitle-bg-color" value="#000000">
+                        </div>
+                        <p class="hint">Ex.: #000000</p>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="subtitle-outline">Cor do contorno</label>
+                        <div class="color-input-wrapper">
+                            <input type="color" id="subtitle-outline-picker" value="#000000">
+                            <input type="text" id="subtitle-outline" value="#000000">
+                        </div>
+                        <p class="hint">Ex.: #000000</p>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="subtitle-font">Fonte</label>
+                        <input type="text" id="subtitle-font" value="Arial Black">
+                        <p class="hint">Ex.: Arial Black</p>
+                    </div>
+                </div>
+                
+                <div>
+                    <h3 class="tab-title" style="font-size: 14px;">Preview</h3>
+                    <p class="tab-description">Digite uma frase para testar.</p>
+                    <input type="text" id="subtitle-preview-text" value="Hoje vamos falar sobre a China." style="margin-bottom: 10px;">
+                    <div class="preview-box" id="subtitle-preview">
+                        <div class="preview-frame"></div>
+                        <div class="preview-subtitle" id="preview-subtitle-text">Hoje vamos falar sobre a China.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab Logo -->
+        <div id="tab-logo" class="tab-content">
+            <h2 class="tab-title">Logo</h2>
+            <p class="tab-description">Cole uma imagem PNG para aparecer por cima do vídeo.</p>
+            
+            <div class="two-column">
+                <div>
+                    <div class="form-group">
+                        <label for="logo-path">Arquivo PNG da logo</label>
+                        <div class="btn-group">
+                            <input type="text" id="logo-path" placeholder="Nenhuma logo selecionada" style="flex: 1;">
+                            <button class="secondary" onclick="selectLogo()">Selecionar</button>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="logo-position">Canto do vídeo</label>
+                        <select id="logo-position">
+                            <option value="Canto superior direito">Canto superior direito</option>
+                            <option value="Canto superior esquerdo">Canto superior esquerdo</option>
+                            <option value="Canto inferior direito">Canto inferior direito</option>
+                            <option value="Canto inferior esquerdo">Canto inferior esquerdo</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="logo-size">Tamanho da logo (% da largura)</label>
+                        <input type="number" id="logo-size" value="20" min="0" max="100">
+                        <p class="hint">Ex.: 20. Use 0 para não exibir a logo.</p>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="logo-text">Texto abaixo da logo (opcional)</label>
+                        <input type="text" id="logo-text" placeholder="Digite um texto opcional">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="logo-text-size">Tamanho do texto</label>
+                        <input type="number" id="logo-text-size" value="12" min="8" max="32">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="logo-text-font">Fonte do texto</label>
+                        <input type="text" id="logo-text-font" value="Arial">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="logo-text-position">Posição do texto</label>
+                        <select id="logo-text-position">
+                            <option value="Abaixo">Abaixo da logo</option>
+                            <option value="Acima">Acima da logo</option>
+                        </select>
+                    </div>
+                    
+                    <button class="secondary" onclick="clearLogo()">Remover logo</button>
+                </div>
+                
+                <div>
+                    <h3 class="tab-title" style="font-size: 14px;">Preview</h3>
+                    <div class="logo-preview" id="logo-preview">
+                        <span>Sem logo</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab Áudio -->
+        <div id="tab-audio" class="tab-content">
+            <h2 class="tab-title">Áudio</h2>
+            <p class="tab-description">Gere áudios localmente usando IA.</p>
+            
+            <div class="card">
+                <h3 class="card-title">Configurações de TTS Local</h3>
+                
+                <div class="form-group">
+                    <label for="tts-language">Idioma</label>
+                    <select id="tts-language">
+                        <option value="pt-br">Português (Brasil)</option>
+                        <option value="en-us">Inglês (EUA)</option>
+                        <option value="en-gb">Inglês (Reino Unido)</option>
+                        <option value="es-es">Espanhol</option>
+                        <option value="fr-fr">Francês</option>
+                        <option value="de-de">Alemão</option>
+                        <option value="it-it">Italiano</option>
+                        <option value="ja-jp">Japonês</option>
+                        <option value="zh-cn">Chinês</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="tts-voice-ref">Áudio de referência</label>
+                    <div class="btn-group">
+                        <input type="text" id="tts-voice-ref" placeholder="Selecione um áudio de 3-10 segundos" style="flex: 1;">
+                        <button class="secondary" onclick="selectVoiceRef()">Selecionar áudio</button>
+                    </div>
+                    <p class="hint">Selecione um áudio de 3-10 segundos com a voz desejada para clonagem.</p>
+                </div>
+                
+                <div id="tts-status" style="color: #dc2626; font-size: 9px; margin-top: 12px;">XTTS: Não carregado</div>
+                
+                <div class="btn-group" style="margin-top: 10px;">
+                    <button class="primary" onclick="loadXTTS()">Carregar XTTS</button>
+                </div>
+            </div>
+            
+            <h3 class="tab-title" style="font-size: 14px; margin-top: 16px;">Frases do Roteiro</h3>
+            <div id="audio-list" class="script-list">
+                <!-- Lista de áudios será inserida aqui -->
+            </div>
+            
+            <div class="btn-group" style="margin-top: 16px;">
+                <button class="primary" onclick="generateAllAudios()">Gerar todos os áudios</button>
+            </div>
+        </div>
+
+        <!-- Tab Música -->
+        <div id="tab-musica" class="tab-content">
+            <h2 class="tab-title">Música</h2>
+            <p class="tab-description">Selecione uma música do PC para tocar durante todo o vídeo.</p>
+            
+            <div class="form-group">
+                <label for="music-path">Arquivo de música</label>
+                <div class="btn-group">
+                    <input type="text" id="music-path" placeholder="Nenhuma música selecionada" style="flex: 1;">
+                    <button class="secondary" onclick="selectMusic()">Selecionar música</button>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label for="music-volume">Volume da música (%)</label>
+                <input type="number" id="music-volume" value="20" min="0" max="100">
+                <p class="hint">Padrão: 20. Use 0 para silenciar ou 100 para volume total.</p>
+            </div>
+        </div>
+
+        <!-- Progresso e Status -->
+        <div class="progress-container">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+            
+            <div class="status-bar">
+                <span id="status-text">Pronto.</span>
+                <span id="progress-text"></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Botão flutuante Gerar Vídeo -->
+    <button class="floating-generate-btn" onclick="generateVideo()">🎬 Gerar vídeo</button>
+
+    <!-- Log flutuante -->
+    <div class="floating-log" id="floating-log"></div>
+
+    <script>
+        // Configuração e estado do aplicativo
+        const state = {
+            subtitlesEnabled: false,
+            lines: [],
+            config: {}
+        };
+
+        // Inicialização
+        document.addEventListener('DOMContentLoaded', function() {
+            loadConfig();
+            setupNavigation();
+            setupColorPickers();
+            refreshLines();
+            updateSubtitlePreview();
+        });
+
+        // Navegação entre abas
+        function setupNavigation() {
+            const navButtons = document.querySelectorAll('nav button');
+            const tabContents = document.querySelectorAll('.tab-content');
+
+            navButtons.forEach(button => {
+                button.addEventListener('click', function() {
+                    const tabId = this.getAttribute('data-tab');
+                    
+                    // Remove active class from all buttons and tabs
+                    navButtons.forEach(btn => btn.classList.remove('active'));
+                    tabContents.forEach(tab => tab.classList.remove('active'));
+                    
+                    // Add active class to clicked button and corresponding tab
+                    this.classList.add('active');
+                    document.getElementById(`tab-${tabId}`).classList.add('active');
+                    
+                    // Refresh lines when video tab is selected
+                    if (tabId === 'video') {
+                        refreshLines();
+                    }
+                });
+            });
+        }
+
+        // Configurar color pickers
+        function setupColorPickers() {
+            const colorInputs = [
+                { picker: 'subtitle-color-picker', text: 'subtitle-color' },
+                { picker: 'subtitle-highlight-picker', text: 'subtitle-highlight' },
+                { picker: 'subtitle-bg-color-picker', text: 'subtitle-bg-color' },
+                { picker: 'subtitle-outline-picker', text: 'subtitle-outline' }
+            ];
+
+            colorInputs.forEach(({ picker, text }) => {
+                const pickerEl = document.getElementById(picker);
+                const textEl = document.getElementById(text);
+                
+                pickerEl.addEventListener('input', function() {
+                    textEl.value = this.value.toUpperCase();
+                    updateSubtitlePreview();
+                });
+                
+                textEl.addEventListener('input', function() {
+                    if (/^#[0-9A-Fa-f]{6}$/.test(this.value)) {
+                        pickerEl.value = this.value.toLowerCase();
+                        updateSubtitlePreview();
+                    }
+                });
+            });
+        }
+
+        // Carregar configuração salva
+        function loadConfig() {
+            const savedConfig = localStorage.getItem('videogenerator_config');
+            if (savedConfig) {
+                try {
+                    state.config = JSON.parse(savedConfig);
+                    
+                    // Restaurar valores
+                    if (state.config.pexelsKey) document.getElementById('pexels-key').value = state.config.pexelsKey;
+                    if (state.config.groqKey) document.getElementById('groq-key').value = state.config.groqKey;
+                    if (state.config.videoTitle) document.getElementById('video-title').value = state.config.videoTitle;
+                    if (state.config.scriptText) document.getElementById('script-text').value = state.config.scriptText;
+                    if (state.config.outputDir) document.getElementById('output-dir').value = state.config.outputDir;
+                    if (state.config.logoPath) document.getElementById('logo-path').value = state.config.logoPath;
+                    if (state.config.logoPosition) document.getElementById('logo-position').value = state.config.logoPosition;
+                    if (state.config.logoSize) document.getElementById('logo-size').value = state.config.logoSize;
+                    if (state.config.logoText) document.getElementById('logo-text').value = state.config.logoText;
+                    if (state.config.logoTextSize) document.getElementById('logo-text-size').value = state.config.logoTextSize;
+                    if (state.config.logoTextFont) document.getElementById('logo-text-font').value = state.config.logoTextFont;
+                    if (state.config.logoTextPosition) document.getElementById('logo-text-position').value = state.config.logoTextPosition;
+                    if (state.config.subtitlePosition) document.getElementById('subtitle-position').value = state.config.subtitlePosition;
+                    if (state.config.subtitleSize) document.getElementById('subtitle-size').value = state.config.subtitleSize;
+                    if (state.config.subtitleFont) document.getElementById('subtitle-font').value = state.config.subtitleFont;
+                    if (state.config.subtitleColor) document.getElementById('subtitle-color').value = state.config.subtitleColor;
+                    if (state.config.subtitleBgColor) document.getElementById('subtitle-bg-color').value = state.config.subtitleBgColor;
+                    if (state.config.subtitleOutline) document.getElementById('subtitle-outline').value = state.config.subtitleOutline;
+                    if (state.config.subtitleBackground) document.getElementById('subtitle-background').value = state.config.subtitleBackground;
+                    
+                    console.log('Configuração carregada com sucesso');
+                } catch (e) {
+                    console.error('Erro ao carregar configuração:', e);
+                }
+            }
+        }
+
+        // Salvar configuração
+        function saveConfig() {
+            state.config = {
+                pexelsKey: document.getElementById('pexels-key').value.trim(),
+                groqKey: document.getElementById('groq-key').value.trim(),
+                videoTitle: document.getElementById('video-title').value.trim(),
+                scriptText: document.getElementById('script-text').value,
+                outputDir: document.getElementById('output-dir').value.trim(),
+                logoPath: document.getElementById('logo-path').value.trim(),
+                logoPosition: document.getElementById('logo-position').value,
+                logoSize: document.getElementById('logo-size').value,
+                logoText: document.getElementById('logo-text').value,
+                logoTextSize: document.getElementById('logo-text-size').value,
+                logoTextFont: document.getElementById('logo-text-font').value,
+                logoTextPosition: document.getElementById('logo-text-position').value,
+                subtitlePosition: document.getElementById('subtitle-position').value,
+                subtitleSize: document.getElementById('subtitle-size').value,
+                subtitleFont: document.getElementById('subtitle-font').value,
+                subtitleColor: document.getElementById('subtitle-color').value,
+                subtitleBgColor: document.getElementById('subtitle-bg-color').value,
+                subtitleOutline: document.getElementById('subtitle-outline').value,
+                subtitleBackground: document.getElementById('subtitle-background').value
+            };
+            
+            localStorage.setItem('videogenerator_config', JSON.stringify(state.config));
+            setStatus('Configurações salvas no navegador.');
+        }
+
+        // Atualizar lista de linhas
+        function refreshLines() {
+            const scriptText = document.getElementById('script-text').value;
+            state.lines = scriptText.split('\n').filter(line => line.trim()).map(text => ({
+                text: text.trim(),
+                mediaUrl: ''
+            }));
+            
+            renderLines();
+            renderAudioList();
+        }
+
+        // Renderizar linhas na tab Vídeo
+        function renderLines() {
+            const container = document.getElementById('lines-container');
+            container.innerHTML = '';
+            
+            if (state.lines.length === 0) {
+                container.innerHTML = '<p style="font-size: 10px; color: #657084; padding: 8px;">Nenhuma frase no roteiro ainda.</p>';
+                return;
+            }
+            
+            state.lines.forEach((line, index) => {
+                const item = document.createElement('div');
+                item.className = 'script-item';
+                
+                let previewHtml = '';
+                if (line.mediaUrl) {
+                    previewHtml = `<div class="line-media-preview" style="background-image: url('${escapeHtml(line.mediaUrl)}');"></div>`;
+                } else {
+                    previewHtml = '<div class="line-media-preview" style="display:flex;align-items:center;justify-content:center;color:#657084;font-size:9px;">Sem mídia</div>';
+                }
+                
+                item.innerHTML = `
+                    ${previewHtml}
+                    <div class="script-item-text">
+                        <strong>${index + 1}.</strong> ${escapeHtml(line.text)}
+                    </div>
+                    <div class="script-item-actions">
+                        <button class="primary" onclick="pasteLineLink(${index})">Colar link</button>
+                        <button class="secondary" onclick="editLineLink(${index})">Editar</button>
+                    </div>
+                `;
+                container.appendChild(item);
+            });
+        }
+
+        // Renderizar lista de áudios
+        function renderAudioList() {
+            const container = document.getElementById('audio-list');
+            container.innerHTML = '';
+            
+            if (state.lines.length === 0) {
+                container.innerHTML = '<p style="font-size: 10px; color: #657084; padding: 8px;">Nenhuma frase no roteiro.</p>';
+                return;
+            }
+            
+            state.lines.forEach((line, index) => {
+                const item = document.createElement('div');
+                item.className = 'script-item';
+                item.innerHTML = `
+                    <div class="script-item-text">
+                        <strong>${index + 1}.</strong> ${escapeHtml(line.text.substring(0, 80) + (line.text.length > 80 ? '...' : ''))}
+                    </div>
+                    <div class="script-item-actions">
+                        <button class="secondary" disabled>Áudio não gerado</button>
+                    </div>
+                `;
+                container.appendChild(item);
+            });
+        }
+
+        // Gerar roteiro com IA
+        function generateScript() {
+            const title = document.getElementById('video-title').value.trim();
+            const promptText = document.getElementById('script-prompt').value.trim();
+            const groqKey = document.getElementById('groq-key').value.trim();
+            
+            if (!title) {
+                alert('Informe um título na aba Roteiro para gerar o roteiro.');
+                return;
+            }
+            
+            if (!groqKey) {
+                alert('Informe a chave de API do Groq na aba APIs.');
+                switchTab('apis');
+                return;
+            }
+            
+            saveConfig();
+            setProgress(0);
+            setProgressText('Gerando roteiro...');
+            setStatus('Gerando roteiro com Groq...');
+            
+            // Simulação de chamada à API usando apenas o que foi digitado no prompt
+            setTimeout(() => {
+                if (!promptText) {
+                    alert('Digite um prompt na caixa de texto para gerar o roteiro.');
+                    setProgress(0);
+                    setStatus('Aguardando prompt...');
+                    setProgressText('Pendente');
+                    return;
+                }
+                
+                // Usa apenas o que foi digitado no prompt, linha por linha
+                const sampleScript = promptText.split('\n').filter(line => line.trim()).join('\n');
+
+                document.getElementById('script-text').value = sampleScript;
+                refreshLines();
+                setProgress(100);
+                setStatus('Roteiro gerado com sucesso!');
+                setProgressText('Concluído');
+            }, 1500);
+        }
+
+        // Alternar legendas
+        function toggleSubtitles() {
+            state.subtitlesEnabled = !state.subtitlesEnabled;
+            const button = document.getElementById('subtitle-toggle');
+            const status = document.getElementById('subtitle-status');
+            
+            if (state.subtitlesEnabled) {
+                button.textContent = 'Legendas Ligadas';
+                status.textContent = 'Legendas: Ligadas';
+                status.style.color = '#16a34a';
+            } else {
+                button.textContent = 'Legendas Desligadas';
+                status.textContent = 'Legendas: Desligadas';
+                status.style.color = '#dc2626';
+            }
+            
+            updateSubtitlePreview();
+        }
+
+        // Atualizar preview de legendas
+        function updateSubtitlePreview() {
+            const previewText = document.getElementById('subtitle-preview-text').value;
+            const previewElement = document.getElementById('preview-subtitle-text');
+            const position = document.getElementById('subtitle-position').value;
+            const hasBackground = document.getElementById('subtitle-background').value === 'Sim';
+            
+            if (!state.subtitlesEnabled) {
+                previewElement.textContent = 'Legendas desligadas';
+                previewElement.style.display = 'block';
+                previewElement.style.backgroundColor = 'transparent';
+                previewElement.style.color = '#8b95a7';
+                previewElement.style.bottom = 'auto';
+                previewElement.style.top = '50%';
+                return;
+            }
+            
+            previewElement.textContent = previewText || 'Digite uma frase para testar.';
+            previewElement.style.display = 'block';
+            
+            // Posição
+            if (position === 'Baixo') {
+                previewElement.style.bottom = '40px';
+                previewElement.style.top = 'auto';
+            } else if (position === 'Centro') {
+                previewElement.style.bottom = 'auto';
+                previewElement.style.top = '50%';
+            } else if (position === 'Topo') {
+                previewElement.style.bottom = 'auto';
+                previewElement.style.top = '40px';
+            }
+            
+            // Fundo - quando desativado, remove completamente o background
+            if (hasBackground) {
+                previewElement.style.backgroundColor = document.getElementById('subtitle-bg-color').value;
+            } else {
+                previewElement.style.backgroundColor = 'transparent';
+                previewElement.style.background = 'none';
+            }
+            
+            // Cor do texto
+            previewElement.style.color = document.getElementById('subtitle-color').value;
+            
+            // Tamanho
+            previewElement.style.fontSize = document.getElementById('subtitle-size').value + 'px';
+            
+            // Fonte
+            previewElement.style.fontFamily = document.getElementById('subtitle-font').value;
+            
+            // Contorno
+            const outlineColor = document.getElementById('subtitle-outline').value;
+            previewElement.style.textShadow = `1px 1px 2px ${outlineColor}, -1px -1px 2px ${outlineColor}, 1px -1px 2px ${outlineColor}, -1px 1px 2px ${outlineColor}`;
+        }
+
+        function updateLogoPreview() {
+            const logoPath = document.getElementById('logo-path').value;
+            const logoPosition = document.getElementById('logo-position').value;
+            const logoSize = document.getElementById('logo-size').value;
+            const logoText = document.getElementById('logo-text').value;
+            const logoTextSize = document.getElementById('logo-text-size').value;
+            const logoTextFont = document.getElementById('logo-text-font').value;
+            const logoTextPosition = document.getElementById('logo-text-position').value;
+            const preview = document.getElementById('logo-preview');
+
+            // Calcular posição da logo
+            let logoStyle = '';
+            const sizePercent = parseInt(logoSize) || 20;
+            const sizePx = Math.max(10, Math.round((sizePercent / 100) * 80));
+
+            if (logoPosition === 'Canto superior direito') {
+                logoStyle = 'top: 20px; right: 20px;';
+            } else if (logoPosition === 'Canto superior esquerdo') {
+                logoStyle = 'top: 20px; left: 20px;';
+            } else if (logoPosition === 'Canto inferior direito') {
+                logoStyle = 'bottom: 20px; right: 20px;';
+            } else if (logoPosition === 'Canto inferior esquerdo') {
+                logoStyle = 'bottom: 20px; left: 20px;';
+            }
+
+            // Mostrar preview da logo apenas se houver um caminho definido
+            if (logoPath) {
+                let html = `<img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='${sizePx}' height='${sizePx}' viewBox='0 0 60 60'%3E%3Crect fill='%235b6cff' width='60' height='60'/%3E%3Ctext fill='white' x='50%25' y='50%25' text-anchor='middle' dy='.3em' font-size='10'%3ELOGO%3C/text%3E%3C/svg%3E" style="${logoStyle}" alt="Logo">`;
+
+                // Adicionar texto
+                if (logoText) {
+                    let textPosition = '';
+                    if (logoTextPosition === 'Abaixo') {
+                        textPosition = logoPosition.includes('superior') ? `top: ${20 + sizePx + 5}px;` : `bottom: ${20 + sizePx + 5}px;`;
+                    } else {
+                        textPosition = logoPosition.includes('superior') ? `top: ${20 - parseInt(logoTextSize) - 5}px;` : `bottom: ${20 - parseInt(logoTextSize) - 5}px;`;
+                    }
+
+                    if (logoPosition.includes('direito')) {
+                        textPosition += ' right: 20px; text-align: right;';
+                    } else {
+                        textPosition += ' left: 20px; text-align: left;';
+                    }
+
+                    html += `<div class="logo-preview-text" style="${textPosition} color: #ffffff; font-size: ${logoTextSize}px; font-family: ${logoTextFont};">${escapeHtml(logoText)}</div>`;
+                }
+
+                preview.innerHTML = html;
+            } else {
+                preview.innerHTML = '<span style="color: #657084; font-size: 10px;">Sem logo selecionada</span>';
+            }
+        }
+
+        // Selecionar logo
+        function selectLogo() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'image/png';
+            input.onchange = function(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    document.getElementById('logo-path').value = file.name;
+                    updateLogoPreview();
+                }
+            };
+            input.click();
+        }
+
+        // Limpar logo
+        function clearLogo() {
+            document.getElementById('logo-path').value = '';
+            updateLogoPreview();
+            setStatus('Logo removida.');
+        }
+
+        // Selecionar referência de voz
+        function selectVoiceRef() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'audio/*';
+            input.onchange = function(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    document.getElementById('tts-voice-ref').value = file.name;
+                }
+            };
+            input.click();
+        }
+
+        // Carregar modelo XTTS
+        function loadXTTS() {
+            setStatus('Carregando modelo XTTS...');
+            
+            setTimeout(() => {
+                const statusEl = document.getElementById('tts-status');
+                statusEl.textContent = 'XTTS: Carregado (simulação)';
+                statusEl.style.color = '#059669';
+                setStatus('Modelo XTTS carregado!');
+            }, 2000);
+        }
+
+        // Gerar todos os áudios
+        function generateAllAudios() {
+            if (state.lines.length === 0) {
+                alert('Nenhuma frase no roteiro. Gere um roteiro primeiro.');
+                return;
+            }
+            
+            setStatus('Gerando áudios...');
+            setProgress(0);
+            
+            let completed = 0;
+            const interval = setInterval(() => {
+                completed++;
+                setProgress((completed / state.lines.length) * 100);
+                setProgressText(`Gerando áudio ${completed}/${state.lines.length}`);
+                
+                if (completed >= state.lines.length) {
+                    clearInterval(interval);
+                    setStatus('Todos os áudios gerados!');
+                    setProgressText('Concluído');
+                    renderAudioList();
+                }
+            }, 500);
+        }
+
+        // Selecionar música
+        function selectMusic() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'audio/*';
+            input.onchange = function(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    document.getElementById('music-path').value = file.name;
+                }
+            };
+            input.click();
+        }
+
+        // Escolher diretório de saída
+        function chooseOutputDir() {
+            // Em um app web real, usaríamos a File System Access API
+            const dir = prompt('Digite o caminho da pasta de saída:', document.getElementById('output-dir').value);
+            if (dir) {
+                document.getElementById('output-dir').value = dir;
+                saveConfig();
+            }
+        }
+
+        // Atualizar vídeos
+        function updateVideos() {
+            const pexelsKey = document.getElementById('pexels-key').value.trim();
+            const groqKey = document.getElementById('groq-key').value.trim();
+            
+            if (!pexelsKey) {
+                alert('Informe a chave de API do Pexels na aba APIs.');
+                switchTab('apis');
+                return;
+            }
+            
+            if (!groqKey) {
+                alert('Informe a chave de API do Groq na aba APIs.');
+                switchTab('apis');
+                return;
+            }
+            
+            if (state.lines.length === 0) {
+                alert('Adicione pelo menos uma frase ao roteiro.');
+                return;
+            }
+            
+            saveConfig();
+            setProgress(0);
+            setProgressText('Atualizando vídeos...');
+            setStatus('Gerando pesquisas com Groq...');
+            
+            // Simulação
+            setTimeout(() => {
+                setProgress(100);
+                setStatus('Vídeos atualizados!');
+                setProgressText('Concluído');
+            }, 3000);
+        }
+
+        // Gerar vídeo
+        function generateVideo() {
+            if (state.lines.length === 0) {
+                alert('Adicione pelo menos uma frase ao roteiro.');
+                return;
+            }
+
+            const pexelsKey = document.getElementById('pexels-key').value.trim();
+            if (!pexelsKey) {
+                alert('Informe a chave de API do Pexels na aba APIs.');
+                switchTab('apis');
+                return;
+            }
+
+            saveConfig();
+            setProgress(0);
+
+            // Mostrar log flutuante
+            const logEl = document.getElementById('floating-log');
+            logEl.classList.add('show');
+            logEl.innerHTML = '';
+
+            const steps = state.lines.length * 3 + 1;
+            let currentStep = 0;
+
+            const addLogEntry = (text) => {
+                const entry = document.createElement('div');
+                entry.className = 'floating-log-entry';
+                entry.textContent = text;
+                logEl.appendChild(entry);
+                logEl.scrollTop = logEl.scrollHeight;
+            };
+
+            addLogEntry('Iniciando geração do vídeo...');
+
+            const interval = setInterval(() => {
+                currentStep++;
+                setProgress((currentStep / steps) * 100);
+
+                if (currentStep <= state.lines.length) {
+                    const msg = `Gerando áudio ${currentStep}/${state.lines.length}...`;
+                    setStatus(msg);
+                    addLogEntry(msg);
+                } else if (currentStep <= state.lines.length * 2) {
+                    const msg = `Baixando mídia ${currentStep - state.lines.length}/${state.lines.length}...`;
+                    setStatus(msg);
+                    addLogEntry(msg);
+                } else if (currentStep <= state.lines.length * 3) {
+                    const msg = `Criando cena ${currentStep - state.lines.length * 2}/${state.lines.length}...`;
+                    setStatus(msg);
+                    addLogEntry(msg);
+                } else {
+                    const msg = 'Unindo cenas...';
+                    setStatus(msg);
+                    addLogEntry(msg);
+                }
+
+                if (currentStep >= steps) {
+                    clearInterval(interval);
+                    setProgressText('Concluído');
+                    setStatus('Vídeo gerado com sucesso!');
+                    addLogEntry('Vídeo gerado com sucesso!');
+                    addLogEntry('(Em um app real, o vídeo seria salvo no diretório especificado)');
+                }
+            }, 300);
+        }
+
+        // Colar link na linha
+        function pasteLineLink(index) {
+            navigator.clipboard.readText().then(text => {
+                if (text.trim()) {
+                    state.lines[index].mediaUrl = text.trim();
+                    renderLines();
+                    setStatus(`Link colado na frase ${index + 1}.`);
+                } else {
+                    alert('A área de transferência está vazia. Copie um link primeiro.');
+                }
+            }).catch(() => {
+                alert('Não foi possível acessar a área de transferência.');
+            });
+        }
+
+        // Editar link da linha
+        function editLineLink(index) {
+            const line = state.lines[index];
+            const newUrl = prompt(`Cole um link de vídeo/foto do Pexels para a frase:\n${line.text}`, line.mediaUrl);
+            if (newUrl !== null) {
+                state.lines[index].mediaUrl = newUrl.trim();
+                renderLines();
+                saveConfig();
+            }
+        }
+
+        // Utilitários
+        function switchTab(tabId) {
+            document.querySelector(`nav button[data-tab="${tabId}"]`).click();
+        }
+
+        function setStatus(text) {
+            document.getElementById('status-text').textContent = text;
+        }
+
+        function setProgress(percent) {
+            document.getElementById('progress-fill').style.width = percent + '%';
+        }
+
+        function setProgressText(text) {
+            document.getElementById('progress-text').textContent = text;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Event listeners para atualização em tempo real
+        document.getElementById('subtitle-preview-text').addEventListener('input', updateSubtitlePreview);
+        document.getElementById('subtitle-background').addEventListener('change', updateSubtitlePreview);
+        document.getElementById('subtitle-position').addEventListener('change', updateSubtitlePreview);
+        document.getElementById('subtitle-size').addEventListener('input', updateSubtitlePreview);
+        document.getElementById('subtitle-font').addEventListener('input', updateSubtitlePreview);
+        document.getElementById('subtitle-outline').addEventListener('input', updateSubtitlePreview);
+        document.getElementById('logo-path').addEventListener('input', updateLogoPreview);
+        document.getElementById('logo-position').addEventListener('change', updateLogoPreview);
+        document.getElementById('logo-size').addEventListener('input', updateLogoPreview);
+        document.getElementById('logo-text').addEventListener('input', updateLogoPreview);
+        document.getElementById('logo-text-size').addEventListener('input', updateLogoPreview);
+        document.getElementById('logo-text-font').addEventListener('input', updateLogoPreview);
+        document.getElementById('logo-text-position').addEventListener('change', updateLogoPreview);
+    </script>
+</body>
+</html>
