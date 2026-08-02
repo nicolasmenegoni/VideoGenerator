@@ -96,6 +96,9 @@ class VideoGeneratorApp:
         self.logo_position = StringVar(value="Canto superior direito")
         self.logo_size = StringVar(value="20")
         self.logo_text = StringVar(value="")
+        self.logo_text_font = StringVar(value="Arial")
+        self.logo_text_size = StringVar(value="24")
+        self.logo_text_offset = StringVar(value="12")
         self.video_title = StringVar(value="video_gerado")
         self.output_dir = StringVar(value=str(Path.home() / "Videos"))
         self.video_extra_after_audio = StringVar(value="1")
@@ -529,12 +532,15 @@ class VideoGeneratorApp:
         )
         self._entry_row(controls, "Tamanho da logo (% da largura do vídeo)", self.logo_size, "Ex.: 20. Use 0 para não exibir a logo.")
         self._entry_row(controls, "Texto abaixo da logo (opcional)", self.logo_text, "Digite um texto para aparecer abaixo da logo no preview e no vídeo.")
+        self._entry_row(controls, "Fonte do texto da logo", self.logo_text_font, "Ex.: Arial, Segoe UI, etc.")
+        self._entry_row(controls, "Tamanho da fonte do texto", self.logo_text_size, "Ex.: 24")
+        self._entry_row(controls, "Offset vertical do texto (pixels)", self.logo_text_offset, "Distância entre a logo e o texto.")
         Button(controls, text="Remover logo", command=self._clear_logo, bg="#eef1ff", fg="#27319f", relief="flat", padx=14, pady=9, font=("Segoe UI", 10, "bold")).pack(anchor="w")
 
         ttk.Label(preview_box, text="Preview", style="Title.TLabel").pack(anchor="w")
         self.logo_preview = Canvas(preview_box, width=300, height=500, bg="#111827", bd=0, highlightthickness=0)
         self.logo_preview.pack(pady=(12, 0))
-        for variable in [self.logo_path, self.logo_position, self.logo_size, self.logo_text]:
+        for variable in [self.logo_path, self.logo_position, self.logo_size, self.logo_text, self.logo_text_font, self.logo_text_size, self.logo_text_offset]:
             variable.trace_add("write", lambda *_args: self._update_logo_preview())
         self._update_logo_preview()
 
@@ -586,11 +592,18 @@ class VideoGeneratorApp:
         x, y = self._logo_preview_coordinates(width, height, self.logo_preview_image.width(), self.logo_preview_image.height(), margin)
         canvas.create_image(x, y, image=self.logo_preview_image, anchor="nw")
         
-        # Adiciona o texto abaixo da logo no preview
+        # Adiciona o texto abaixo da logo no preview com fonte, tamanho e offset ajustáveis
         logo_text = self.logo_text.get().strip()
         if logo_text:
-            text_y = y + self.logo_preview_image.height() + 12
-            canvas.create_text(x + self.logo_preview_image.width() // 2, text_y, text=logo_text, fill="#ffffff", font=("Segoe UI", 10, "bold"), anchor="n")
+            text_font_name = self.logo_text_font.get().strip() or "Segoe UI"
+            text_font_size = self._safe_float(self.logo_text_size.get(), 10.0, 4.0, 72.0)
+            text_offset = int(self._safe_float(self.logo_text_offset.get(), 12.0, -50.0, 100.0))
+            text_y = y + self.logo_preview_image.height() + text_offset
+            try:
+                text_font = (text_font_name, int(text_font_size), "bold")
+            except Exception:
+                text_font = ("Segoe UI", 10, "bold")
+            canvas.create_text(x + self.logo_preview_image.width() // 2, text_y, text=logo_text, fill="#ffffff", font=text_font, anchor="n")
 
     def _entry_row(self, parent: Frame, label: str, variable: StringVar, hint: str) -> None:
         Label(parent, text=label, bg="#ffffff", fg="#111827", font=("Segoe UI", 10, "bold")).pack(anchor="w")
@@ -1102,6 +1115,9 @@ class VideoGeneratorApp:
                 self.logo_position.set(data.get("logo_position", self.logo_position.get()) or self.logo_position.get())
                 self.logo_size.set(data.get("logo_size", self.logo_size.get()))
                 self.logo_text.set(data.get("logo_text", self.logo_text.get()))
+                self.logo_text_font.set(data.get("logo_text_font", self.logo_text_font.get()))
+                self.logo_text_size.set(data.get("logo_text_size", self.logo_text_size.get()))
+                self.logo_text_offset.set(data.get("logo_text_offset", self.logo_text_offset.get()))
                 self.tts_voice_ref_path.set(data.get("tts_voice_ref_path", self.tts_voice_ref_path.get()))
                 self._saved_script_prompt = data.get("script_prompt", "")
             except json.JSONDecodeError:
@@ -1147,6 +1163,9 @@ class VideoGeneratorApp:
             "logo_position": self.logo_position.get().strip(),
             "logo_size": self.logo_size.get().strip(),
             "logo_text": self.logo_text.get().strip(),
+            "logo_text_font": self.logo_text_font.get().strip(),
+            "logo_text_size": self.logo_text_size.get().strip(),
+            "logo_text_offset": self.logo_text_offset.get().strip(),
             "tts_voice_ref_path": self.tts_voice_ref_path.get().strip(),
         }
         CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -1952,11 +1971,14 @@ class VideoGeneratorApp:
             logo_x, logo_y = self._logo_overlay_expression()
             if logo_text:
                 escaped_text = self._escape_drawtext(logo_text)
+                logo_text_font = self.logo_text_font.get().strip() or "Arial"
+                logo_text_size = int(self._safe_float(self.logo_text_size.get(), 24.0, 4.0, 72.0))
+                logo_text_offset = int(self._safe_float(self.logo_text_offset.get(), 12.0, -50.0, 100.0))
                 filter_complex = (
                     f"[0:v:0]{video_filter},trim=duration={duration:.3f},setpts=PTS-STARTPTS[base];"
                     f"[2:v:0]format=rgba,scale={logo_width}:-1[logo];"
                     f"[base][logo]overlay={logo_x}:{logo_y}:format=auto[with_logo];"
-                    f"[with_logo]drawtext=text='{escaped_text}':fontcolor=white:fontsize=24:x={logo_x}+w/2:y={logo_y}+h+12:font='Arial':alignment=center[v];"
+                    f"[with_logo]drawtext=text='{escaped_text}':fontcolor=white:fontsize={logo_text_size}:x=w/2:y={logo_y}+h+{logo_text_offset}:font='{logo_text_font}':anchor=tc[v];"
                     f"[1:a:0]apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a]"
                 )
             else:
